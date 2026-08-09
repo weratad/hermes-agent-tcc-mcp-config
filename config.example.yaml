@@ -1,0 +1,23 @@
+# ตัวอย่าง config.yaml ของ Hermes gateway ที่ใช้ tcc-mcp-config
+# (วางเป็น $HERMES_HOME/config.yaml — ปรับ model/provider เป็นของคุณ)
+
+model:
+  default: gpt-5.6-sol
+  provider: openai-codex
+
+gateway:
+  multiplex_profiles: true        # จำเป็นสำหรับ /p/<profile>/ routing
+  api_server:
+    max_concurrent_runs: 16       # จำนวนแชทที่รัน LLM พร้อมกันได้ (เกินนี้ได้ 429) — ปรับตามโหลด
+
+platform_toolsets:
+  api_server: '["memory"]'        # เปิด built-in memory (MEMORY.md/USER.md) ต่อโปรไฟล์
+
+plugins:
+  enabled:
+    - tcc-mcp-config
+  disabled: []
+  entries: {}
+
+# mcp_servers: ปลั๊กอินจะ sync ให้เองจากค่า TCC_MCP_URL_/KEY_<ENV> ใน .env
+# (ไม่ต้องเขียนเองก็ได้ — เว้นไว้ให้ปลั๊กอินจัดการ)
