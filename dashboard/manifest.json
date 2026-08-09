@@ -1,0 +1,13 @@
+{
+  "name": "tcc-mcp-config",
+  "label": "TCC MCP Config",
+  "description": "MCP แยก Local / Staging / Production และโปรไฟล์ต่อผู้ใช้",
+  "icon": "Plug",
+  "version": "2.2.0",
+  "tab": {
+    "path": "/tcc-mcp-config",
+    "position": "before:profiles"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
