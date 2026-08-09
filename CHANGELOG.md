@@ -2,6 +2,13 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.3.1] — 2026-08-09
+
+### Docs
+- **อธิบายลำดับ deploy แบบ config-first** — enable ใน `config.yaml` **ก่อน** boot Hermes ครั้งแรก เพื่อไม่ให้เจอ 404 บน dashboard tab (route mount ตอน start เท่านั้น)
+- เพิ่ม section "Deploy บน stg/prod แบบ config-first" (checklist copy-paste)
+- ขยาย Troubleshooting 404: root cause (`_mount_plugin_api_routes` mount ครั้งเดียว + SPA catch-all กลืน), `rescan`/"Restart Gateway" ไม่ช่วย, curl เห็นแค่ 401 (auth gate ตอบก่อน routing) ต้องดูจากเบราว์เซอร์ที่ login
+
 ## [2.3.0] — 2026-08-09
 
 ### Added
@@ -24,5 +31,6 @@
   - `principal_injector` — ฉีด session key ที่ authenticate แล้วลงทุก MCP call (fail-closed)
 - patch gateway ตอนโหลด (route + auto-provision + `/p/` routing + sync MCP servers) — ไม่ต้องมี sidecar
 
+[2.3.1]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.3.1
 [2.3.0]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.3.0
 [2.2.0]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.2.0

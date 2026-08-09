@@ -40,6 +40,13 @@ tcc-admin (widget)  ──►  tcc-ai-assistant  ──►  Hermes gateway (+ �
 
 ## ขั้นตอนติดตั้ง
 
+> ### ⚠️ ลำดับสำคัญที่สุด — enable ใน `config.yaml` **ก่อน** boot Hermes ครั้งแรก
+> Hermes mount route ของปลั๊กอิน (`/api/plugins/tcc-mcp-config/…`) **ตอน start เท่านั้น** และเช็ค allow-list `plugins.enabled` ณ ตอนนั้น — เป็นพฤติกรรมของ Hermes core เอง (กระทบทุกปลั๊กอินที่เพิ่ม backend route ไม่ใช่แค่ตัวนี้)
+> - **ทำถูกลำดับ** (ใส่ปลั๊กอิน + `plugins.enabled` ใน config **ก่อน** process เกิด) → mount ตั้งแต่ boot แรก → **ไม่ต้อง restart เพิ่ม ไม่เจอ 404**
+> - **ทำผิดลำดับ** (enable บน instance ที่รันอยู่แล้ว) → tab โผล่แต่ `/settings` **404** จนกว่าจะ restart ทั้ง process (ปุ่ม "Restart Gateway" ในหน้า UI **ไม่ช่วย** — อันนั้น restart gateway ไม่ใช่ web-server ของ dashboard)
+>
+> **บน stg/prod จึงควรใส่ config ให้ครบก่อน แล้วค่อย start** ตามลำดับข้อ 1→2→3 ด้านล่าง ไม่ใช่ start ก่อนแล้วเปิดทีหลัง
+
 ### 1) วางปลั๊กอินลง Hermes
 ```bash
 # วิธี A — ผ่าน Hermes CLI (clone จาก git)
@@ -51,7 +58,7 @@ git clone https://github.com/weratad/hermes-agent-tcc-mcp-config.git \
 ```
 > ชื่อโฟลเดอร์ปลั๊กอินต้องเป็น `tcc-mcp-config` (ตรงกับ `name:` ใน `plugin.yaml`)
 
-### 2) เปิดใช้งานใน `config.yaml`
+### 2) เปิดใช้งานใน `config.yaml`  ← ทำ**ก่อน** start (ดู callout ด้านบน)
 ```yaml
 plugins:
   enabled:
@@ -92,6 +99,31 @@ TCC_GATEWAY_KEY_LOCAL=<gateway-key>                        # คีย์ที�
 ```bash
 docker compose restart          # หรือวิธี restart gateway ของคุณ
 ```
+
+---
+
+## 🚀 Deploy บน stg/prod แบบ config-first (ไม่เจอ 404 ไม่ต้อง restart เพิ่ม)
+
+ทำ **ตอน Hermes ยังไม่รัน / ก่อน start** เสมอ — เตรียมทุกอย่างให้ครบก่อน boot ครั้งแรก:
+
+```bash
+# 1) วางปลั๊กอิน (ตอน process ยังไม่ขึ้น)
+git clone https://github.com/weratad/hermes-agent-tcc-mcp-config.git \
+  "$HERMES_HOME/plugins/tcc-mcp-config"
+
+# 2) enable ใน config.yaml — ต้องมีก่อน boot (ไม่งั้น route ไม่ mount → 404)
+#    plugins.enabled: [tcc-mcp-config] + gateway.multiplex_profiles: true
+#    (ดูตัวอย่างครบใน config.example.yaml)
+
+# 3) ใส่ 3 คีย์ต่อ env ลง $HERMES_HOME/.env (ดู .env.example)
+#    TCC_MCP_URL_STG / TCC_MCP_KEY_STG / TCC_GATEWAY_KEY_STG
+
+# 4) ค่อย start — boot แรกจะ mount route + sync MCP ให้เลย
+hermes gateway run ...      # + hermes dashboard ...   (หรือ docker compose up -d)
+```
+
+> **ตรวจว่าถูก:** เปิด dashboard tab **TCC MCP Config** จากเบราว์เซอร์ที่ login แล้ว — เห็นการ์ด env + badge LIVE = mount สำเร็จตั้งแต่ boot แรก ไม่ต้อง restart ซ้ำ
+> **ถ้าต้องแก้ config/คีย์ทีหลัง** = แก้แล้ว restart process ตามปกติ (rolling restart / `docker compose restart`) — ไม่ใช่กดปุ่มใน UI
 
 ---
 
@@ -164,13 +196,19 @@ curl -s -X POST -H "Authorization: Bearer $GK" -H "Content-Type: application/jso
 
 ### Dashboard tab ขึ้น "Failed to load: 404 … /api/plugins/tcc-mcp-config/settings"
 tab โหลด (เห็นหัวข้อ) แต่ API 404 = **dashboard ยังไม่ได้ mount `plugin_api.py`**
-เพราะ dashboard mount plugin API ตอน **start เท่านั้น** — ถ้า dashboard รันอยู่ก่อน enable plugin จะยังไม่มี route
-**แก้:** restart dashboard (ต้อง `--stop` ก่อน ไม่งั้น process เก่าค้างเสิร์ฟของเดิม)
+
+**Root cause:** Hermes core mount plugin API route ที่ `_mount_plugin_api_routes()` **ครั้งเดียวตอน web-server start** และวาง route ไว้ก่อน SPA catch-all `/{full_path:path}` — ถ้าตอน start ยังไม่ได้ enable plugin route จะไม่ถูก mount และ catch-all จะกลืน request เป็น 404 · `rescan` ทำให้ tab โผล่ (re-scan manifest) แต่ **ไม่ re-mount API** · ปุ่ม **"Restart Gateway"** ก็ไม่ช่วย (restart คนละ process)
+
+**ป้องกัน (แนะนำ — วิธีที่ถูก):** enable ใน `config.yaml` **ก่อน** boot ครั้งแรก (ดู callout บนสุดของหัวข้อติดตั้ง) → mount ตั้งแต่ boot แรก ไม่มี 404 ไม่ต้อง restart เพิ่ม บน stg/prod ให้ ship config พร้อม deploy แล้วค่อย start
+
+**แก้เมื่อเผลอ enable บน instance ที่รันอยู่แล้ว:** restart **ทั้ง process ของ dashboard web-server** (`--stop` ก่อน ไม่งั้น process เก่าค้างเสิร์ฟของเดิม)
 ```bash
 hermes dashboard --stop
 hermes dashboard --host 0.0.0.0 --port <port> --skip-build   # หรือ restart service/docker ของ dashboard
 ```
-แล้ว hard-refresh หน้า (เช็คได้: `curl <dash>/api/plugins/tcc-mcp-config/settings` ควรเป็น **401** ไม่ใช่ 404)
+แล้ว hard-refresh หน้า
+
+> **เช็คสถานะไม่ได้ด้วย curl เปล่าๆ:** auth gate ตอบ **401** ก่อน routing เสมอ (กันคนนอก fingerprint ว่ามีปลั๊กอินอะไร) — ทั้งตอน 404 และตอนปกติ curl จะได้ 401 เหมือนกัน ต้องดูจาก **เบราว์เซอร์ที่ login แล้ว** (session ผ่าน auth) ถึงจะแยก 404 (ยังไม่ mount) กับ 200 (mount แล้ว) ได้จริง
 
 ### Chat ตอบ "ระบบผู้ช่วยยังไม่พร้อม" / 401
 3 คีย์ไม่ตรงกัน (ดูตารางด้านบน) — เช็ค `HERMES_API_KEY` = `TCC_GATEWAY_KEY_<ENV>` และ `MCP_TOKEN` (tcc-api) = `TCC_MCP_KEY_<ENV>`
