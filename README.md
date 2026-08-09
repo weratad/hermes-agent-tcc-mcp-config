@@ -68,20 +68,24 @@ platform_toolsets:
 ```
 
 ### 3) ตั้งค่า environments (ขั้นตอนหัวใจ)
-ปลั๊กอินอ่านค่าต่อ env จาก **`.env` ของ default profile** (`$HERMES_HOME/.env`)
-สำหรับแต่ละ env ที่จะใช้ (`LOCAL`/`STG`/`PROD`) ตั้ง 3 ค่า:
 
+ตั้งได้ **2 วิธี — ผลเหมือนกัน** เพราะเก็บที่เดียว (`$HERMES_HOME/.env` ของ default profile)
+UI แค่เป็นตัวช่วยแก้ `.env` ให้ (กด Save → เขียนลง `.env` → plugin อ่านจาก `.env` เดิมนั้น)
+
+**วิธี A — ผ่าน Dashboard tab "TCC MCP Config" (แนะนำ)**
+กรอก MCP URL / MCP API Key / Gateway Key ของแต่ละ env แล้วกด **Save** — ระบบเขียนลง `.env` ให้เอง
+> badge **LIVE** = gateway ต่อ MCP ด้วยค่านี้อยู่ · ถ้าขึ้น **"รอ restart"** = บันทึกแล้วแต่ต้อง restart gateway ก่อน MCP ถึงจะต่อด้วยค่าใหม่ (Hermes ต่อ MCP ตอน start ครั้งเดียว)
+
+**วิธี B — แก้ `$HERMES_HOME/.env` เอง** (เหมาะกับ script/bootstrap ครั้งแรก)
+สำหรับแต่ละ env ที่จะใช้ (`LOCAL`/`STG`/`PROD`) ตั้ง 3 ค่า:
 ```dotenv
 # ── ตัวอย่าง environment: local ──
 TCC_MCP_URL_LOCAL=http://host.docker.internal:3363/mcp     # URL ของ tcc-api /mcp (ต้องเข้าถึงได้จากใน container)
 TCC_MCP_KEY_LOCAL=<mcp-bearer>                             # bearer ที่ gateway ใช้ยิง tcc-api /mcp
 TCC_GATEWAY_KEY_LOCAL=<gateway-key>                        # คีย์ที่ backend ผู้เรียกใช้เป็น HERMES_API_KEY
-
-# ทำซ้ำสำหรับ STG / PROD ตามต้องการ:
-# TCC_MCP_URL_STG=... TCC_MCP_KEY_STG=... TCC_GATEWAY_KEY_STG=...
-# TCC_MCP_URL_PROD=... TCC_MCP_KEY_PROD=... TCC_GATEWAY_KEY_PROD=...
+# ทำซ้ำสำหรับ STG / PROD ตามต้องการ (ดู .env.example)
 ```
-> หรือกรอกผ่าน **dashboard tab "TCC MCP Config"** ก็ได้ (แนะนำ) — มันเขียนลง `.env` ให้เอง
+> **ไม่ต้องทำทั้ง 2 วิธี** — เลือกอย่างใดอย่างหนึ่ง (ค่าลงที่ `.env` เดียวกัน) ใช้ UI อย่างเดียวก็พอ
 
 ### 4) Restart gateway
 ปลั๊กอิน patch gateway ตอนโหลด (route + MCP sync ทำครั้งเดียวตอน start) ต้อง restart หลังเปิด/แก้ค่า
