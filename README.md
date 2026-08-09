@@ -160,6 +160,26 @@ curl -s -X POST -H "Authorization: Bearer $GK" -H "Content-Type: application/jso
 
 ---
 
+## Troubleshooting
+
+### Dashboard tab ขึ้น "Failed to load: 404 … /api/plugins/tcc-mcp-config/settings"
+tab โหลด (เห็นหัวข้อ) แต่ API 404 = **dashboard ยังไม่ได้ mount `plugin_api.py`**
+เพราะ dashboard mount plugin API ตอน **start เท่านั้น** — ถ้า dashboard รันอยู่ก่อน enable plugin จะยังไม่มี route
+**แก้:** restart dashboard (ต้อง `--stop` ก่อน ไม่งั้น process เก่าค้างเสิร์ฟของเดิม)
+```bash
+hermes dashboard --stop
+hermes dashboard --host 0.0.0.0 --port <port> --skip-build   # หรือ restart service/docker ของ dashboard
+```
+แล้ว hard-refresh หน้า (เช็คได้: `curl <dash>/api/plugins/tcc-mcp-config/settings` ควรเป็น **401** ไม่ใช่ 404)
+
+### Chat ตอบ "ระบบผู้ช่วยยังไม่พร้อม" / 401
+3 คีย์ไม่ตรงกัน (ดูตารางด้านบน) — เช็ค `HERMES_API_KEY` = `TCC_GATEWAY_KEY_<ENV>` และ `MCP_TOKEN` (tcc-api) = `TCC_MCP_KEY_<ENV>`
+
+### เปลี่ยน MCP URL/key แล้วแต่ tool ยังใช้ค่าเก่า
+ต้อง **restart gateway** (Hermes ต่อ MCP ตอน start ครั้งเดียว) — badge จะขึ้น "รอ restart"
+
+---
+
 ## หมายเหตุ / ข้อจำกัด
 
 - **เพดานโปรไฟล์:** `MAX_PROFILES = 5000` (ใน `environments.py`) — เกินนี้ ensure จะปฏิเสธ เพิ่มค่าถ้าต้องการ
