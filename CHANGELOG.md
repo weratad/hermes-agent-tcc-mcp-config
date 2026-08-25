@@ -2,6 +2,13 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.4.2] — 2026-08-25
+
+### Changed
+- Bump packaged version to 2.4.2 (plugin.yaml, dashboard badge, Git source label)
+
+[2.4.2]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.4.2
+
 ## [2.4.1] — 2026-08-25
 
 ### Added

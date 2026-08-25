@@ -3,7 +3,7 @@
   "label": "TCC MCP Config",
   "description": "MCP หนึ่งช่อง และโปรไฟล์ต่อผู้ใช้",
   "icon": "Plug",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "tab": {
     "path": "/tcc-mcp-config",
     "position": "before:profiles"

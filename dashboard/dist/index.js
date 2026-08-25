@@ -17,7 +17,7 @@
   var BASE = "/api/plugins/tcc-mcp-config";
 
   // Bump whenever this file changes — the badge is the fastest stale-bundle tell.
-  var BUILD = "v2.4.1";
+  var BUILD = "v2.4.2";
 
   var PLACEHOLDER = "https://api.example.com/mcp";
 
