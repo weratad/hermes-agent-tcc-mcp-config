@@ -29,9 +29,9 @@ this module wraps two ``ApiServerPlatform`` methods:
 SECURITY — why this module authenticates by itself:
     Profile resolution runs in middleware, BEFORE ``_check_auth``. An
     unauthenticated request therefore reaches provisioning first. So the bearer
-    token is verified here against the *target environment's* key before
-    anything is written. That also enforces environment isolation: a staging
-    credential cannot create or reach a ``prod-`` profile.
+    token is verified here against the single gateway key before anything is
+    written. That is what stops an unauthenticated caller from creating
+    directories.
 
 Both patches are wrapped defensively. If a Hermes upgrade renames either method,
 the plugin logs loudly and leaves the gateway working exactly as it did before —
@@ -165,19 +165,20 @@ def _make_ensure_handler():
         if not isinstance(payload, dict):
             payload = {}
 
-        env = envs.normalize_env(payload.get("environment"))
+        # ``environment`` is accepted and ignored so old tcc-ai-assistant
+        # callers that still send it do not 400.
         principal_type = str(payload.get("type") or "").strip().lower()
         raw_id = str(payload.get("id") or "").strip()
         raw_store = payload.get("store_id")
         raw_store = "" if raw_store in (None, "") else str(raw_store).strip()
 
-        if not env or principal_type not in ("staff", "user") or not raw_id.isdigit():
+        if principal_type not in ("staff", "user", "organizer") or not raw_id.isdigit():
             return web.json_response({"error": "invalid request"}, status=400)
         if raw_store and not raw_store.isdigit():
             return web.json_response({"error": "invalid request"}, status=400)
 
-        name = f"{env}-{principal_type}-{int(raw_id)}"
-        if principal_type == "user" and raw_store:
+        name = f"{principal_type}-{int(raw_id)}"
+        if principal_type != "staff" and raw_store:
             name += f"-store-{int(raw_store)}"
         try:
             ok, detail = envs.ensure_profile(name, bearer=_bearer(request))

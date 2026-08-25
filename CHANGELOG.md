@@ -2,6 +2,31 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.4.1] — 2026-08-25
+
+### Added
+- โปรไฟล์ `organizer-<id>[-store-<id>]` — memory แยกจาก user คนเดียวกัน; MCP principal ถูก rewrite เป็น `user-<id>` เพราะ tcc-api ไม่มี type organizer
+- Dashboard แยกการ์ด MCP config กับการ์ด Profiles
+
+### Tests
+- `python -m pytest tests/` ได้จริง (`pytest.ini` + `_sandbox.py` กันไม่ให้เทสเขียน `$HERMES_HOME` จริง)
+
+[2.4.1]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.4.1
+
+## [2.4.0] — 2026-08-25
+
+### Changed
+- **ยุบ Local/Staging/Production เป็น MCP ช่องเดียว** — คีย์ `TCC_MCP_URL` / `TCC_MCP_KEY` / `TCC_GATEWAY_KEY` (ไม่มี suffix)
+- ชื่อโปรไฟล์เป็น `staff-<id>` / `user-<id>[-store-<id>]` (ไม่ใส่ `local-` / `stg-` / `prod-`)
+- MCP server บน default profile ชื่อ `tcc-api` เสมอ
+- Dashboard การ์ดเดียว; `GET/PUT /settings` ไม่มี `environment`; `POST /internal/.../profiles/ensure` รับ `environment` แต่ไม่ใช้
+- migrate ตอนอ่าน: ถ้าคีย์ใหม่ว่าง จะ copy จาก LOCAL → STG → PROD (และคีย์ v1) โดยไม่ทับของใหม่ ไม่ลบของเก่า
+
+### Removed
+- `ENVIRONMENTS` / การ์ดสามใบ / เช็ค “stg key cannot create prod profile”
+
+[2.4.0]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.4.0
+
 ## [2.3.1] — 2026-08-09
 
 ### Docs

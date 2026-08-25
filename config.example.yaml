@@ -19,5 +19,5 @@ plugins:
   disabled: []
   entries: {}
 
-# mcp_servers: ปลั๊กอินจะ sync ให้เองจากค่า TCC_MCP_URL_/KEY_<ENV> ใน .env
+# mcp_servers: ปลั๊กอินจะ sync ให้เองจากค่า TCC_MCP_URL / TCC_MCP_KEY ใน .env
 # (ไม่ต้องเขียนเองก็ได้ — เว้นไว้ให้ปลั๊กอินจัดการ)

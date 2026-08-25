@@ -1,4 +1,4 @@
 name: tcc-mcp-config
-version: "2.3.0"
-description: "ตั้งค่า MCP แยก Local/Staging/Production ให้ทำงานพร้อมกัน สร้าง Hermes profile ต่อผู้ใช้อัตโนมัติเพื่อแยก memory และฉีด principal ที่เชื่อถือได้ให้ทุก TCC MCP call"
+version: "2.4.1"
+description: "ตั้งค่า MCP หนึ่งช่อง ต่อหนึ่ง Hermes gateway สร้าง profile ต่อผู้ใช้อัตโนมัติเพื่อแยก memory และฉีด principal ที่เชื่อถือได้ให้ทุก TCC MCP call"
 author: "TCC"

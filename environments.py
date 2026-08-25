@@ -1,22 +1,22 @@
-"""Per-environment TCC settings + per-user profile provisioning.
+"""Single TCC MCP settings + per-user profile provisioning.
 
-One Hermes gateway serves THREE environments at once (local / staging /
-production) and ONE Hermes profile per chat user, so every user keeps their own
-``memories/MEMORY.md``. Both facts are encoded in the profile name::
+One Hermes gateway talks to one tcc-api ``/mcp``. Each chat user still gets
+their own Hermes profile so ``memories/MEMORY.md`` stays isolated::
 
-    <env>-api-<staff|user>-<id>          e.g. stg-api-user-2520153
+    staff-<id>                            e.g. staff-3
+    user-<id>[-store-<storeId>]           e.g. user-2520153-store-5002047
+    organizer-<id>[-store-<storeId>]      e.g. organizer-5
 
-``tcc-ai-assistant`` builds that name (``app/services/chat/profile_routing.ts``)
-and calls ``POST /p/<name>/v1/chat/completions``. The gateway's ``/p/`` middleware
-enters that profile's HERMES_HOME for the request, which is what makes memory,
-``config.yaml`` (→ the MCP URL for that environment) and ``.env`` per-user.
+``tcc-ai-assistant`` posts to ``/p/<name>/v1/chat/completions``. The gateway's
+``/p/`` middleware enters that profile's HERMES_HOME, which is what makes memory
+and ``config.yaml`` per-user.
 
 Why settings live in the DEFAULT profile's ``.env``:
     Under multiplex, ``agent.secret_scope`` is fail-closed — a profile only ever
     sees its own ``.env``. So each provisioned profile gets a *materialized copy*
-    of the values for its environment rather than a reference. This module is the
-    single writer of both sides, so the dashboard and the provisioner can never
-    disagree about a key name.
+    of the MCP URL/key rather than a reference. This module is the single writer
+    of both sides, so the dashboard and the provisioner can never disagree about
+    a key name.
 """
 
 from __future__ import annotations
@@ -31,60 +31,56 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-# ── environments ─────────────────────────────────────────────────────────
-# Short codes are what appear in profile names (kept short: the whole profile
-# name must fit hermes' 64-char _PROFILE_ID_RE).
-ENVIRONMENTS = ("local", "stg", "prod")
-
-# tcc-ai-assistant sends the long form; the dashboard shows the long form.
-_ENV_ALIASES = {
-    "local": "local",
-    "dev": "local",
-    "development": "local",
-    "stg": "stg",
-    "staging": "stg",
-    "prod": "prod",
-    "production": "prod",
-}
-
-ENV_LABELS = {"local": "Local", "stg": "Staging", "prod": "Production"}
-
 # The ONLY profile names this plugin will ever create. Anything else is refused,
 # so a caller cannot steer directory creation with a crafted URL.
 #
-#   <env>-staff-<id>
-#   <env>-user-<id>[-store-<storeId>]
+#   staff-<id>
+#   user-<id>[-store-<storeId>]
+#   organizer-<id>[-store-<storeId>]
 #
-# The store is part of the name so one organizer managing several stores keeps
-# separate memory per store, matching how tcc-ai-assistant keys transcripts.
+# Organizer sales chat uses a separate name from AI ASK's ``user-<id>`` so
+# memory does not mix. The store is part of the name so one person managing
+# several stores keeps separate memory per store.
 PROFILE_RE = re.compile(
-    r"^(local|stg|prod)-(?:staff-[0-9]{1,12}|user-[0-9]{1,12}(?:-store-[0-9]{1,12})?)$"
+    r"^(?:staff-[0-9]{1,12}|(?:user|organizer)-[0-9]{1,12}(?:-store-[0-9]{1,12})?)$"
 )
 
 # Bounds the blast radius of a runaway/hostile provisioning loop.
 MAX_PROFILES = 5000
 
-# The MCP server name used by the DEFAULT profile (direct, non-/p/ calls and
-# `hermes mcp test`). Hermes exposes tools as mcp__<sanitized name>__<tool>.
+# Hermes exposes tools as mcp__<sanitized name>__<tool>. One gateway, one MCP
+# connection — a single name is enough (split names existed only to keep three
+# environments from sharing a process-global connection pool).
 MCP_SERVER_NAME = "tcc-api"
 
+KEY_MCP_URL = "TCC_MCP_URL"
+KEY_MCP_API_KEY = "TCC_MCP_KEY"
+KEY_GATEWAY_KEY = "TCC_GATEWAY_KEY"
 
-def mcp_server_name(env: str) -> str:
-    """Per-environment MCP server name — ``tcc-api-stg``, ``tcc-api-prod``, …
-
-    Each environment MUST use a DISTINCT name. ``tools.mcp_tool`` keeps its
-    connected servers in a process-global dict keyed by server NAME alone
-    (``register_mcp_servers``: ``if k not in _servers`` → "already connected,
-    reuse"). One gateway process serves every profile, so if all profiles
-    called their server ``tcc-api``, whichever environment connected FIRST
-    would own that name and every other environment's turns would silently be
-    answered by it — staging users reading local data, or worse. Config is
-    per-profile; the connection pool is not.
-
-    Observed directly: a staging profile with the correct staging URL and key
-    returned local's (empty) event list until the names were split.
-    """
-    return f"{MCP_SERVER_NAME}-{env}"
+# Older per-environment keys. Read once into the unsuffixed names; never deleted.
+_LEGACY_SUFFIXES = ("LOCAL", "STG", "PROD")
+_LEGACY_URL_KEYS = (
+    "TCC_MCP_URL_LOCAL",
+    "TCC_MCP_URL_STG",
+    "TCC_MCP_URL_PROD",
+    "TCC_STAGING_MCP_URL",
+    "TCC_PRODUCTION_MCP_URL",
+)
+_LEGACY_MCP_KEY_KEYS = (
+    "TCC_MCP_KEY_LOCAL",
+    "TCC_MCP_KEY_STG",
+    "TCC_MCP_KEY_PROD",
+    "TCC_STAGING_MCP_API_KEY",
+    "MCP_TCC_MCP_API_KEY",
+    "TCC_PRODUCTION_MCP_API_KEY",
+)
+_LEGACY_GATEWAY_KEYS = (
+    "TCC_GATEWAY_KEY_LOCAL",
+    "TCC_GATEWAY_KEY_STG",
+    "TCC_GATEWAY_KEY_PROD",
+    "API_SERVER_KEY",
+)
+_LEGACY_SERVER_NAMES = tuple(f"{MCP_SERVER_NAME}-{s.lower()}" for s in _LEGACY_SUFFIXES)
 
 # Provider credentials copied from the default profile into each new profile.
 # A WHITELIST on purpose: copying the whole .env would drag platform tokens
@@ -98,31 +94,27 @@ _PROVIDER_KEY_RE = re.compile(
 )
 
 
-def normalize_env(raw: object) -> Optional[str]:
-    """Map any accepted spelling to its short code, or None if unknown."""
-    return _ENV_ALIASES.get(str(raw or "").strip().lower())
+def mcp_server_name() -> str:
+    return MCP_SERVER_NAME
 
 
-# ── settings keys (default profile .env) ─────────────────────────────────
-
-def key_mcp_url(env: str) -> str:
-    return f"TCC_MCP_URL_{env.upper()}"
+def key_mcp_url() -> str:
+    return KEY_MCP_URL
 
 
-def key_mcp_api_key(env: str) -> str:
-    return f"TCC_MCP_KEY_{env.upper()}"
+def key_mcp_api_key() -> str:
+    return KEY_MCP_API_KEY
 
 
-def key_gateway_key(env: str) -> str:
-    """The API_SERVER_KEY every profile of this environment authenticates with.
+def key_gateway_key() -> str:
+    """The API_SERVER_KEY every profile authenticates with.
 
-    All profiles in one environment deliberately SHARE this value: the caller is
-    tcc-ai-assistant (a trusted backend holding one HERMES_API_KEY per
-    deployment), never the end user. Per-user isolation comes from the profile
-    in the URL and the principal in X-Hermes-Session-Key — not from this key.
-    Sharing it is what keeps provisioning free of any key-distribution step.
+    All profiles deliberately SHARE this value: the caller is tcc-ai-assistant
+    (a trusted backend holding one HERMES_API_KEY), never the end user.
+    Per-user isolation comes from the profile in the URL and the principal in
+    X-Hermes-Session-Key — not from this key.
     """
-    return f"TCC_GATEWAY_KEY_{env.upper()}"
+    return KEY_GATEWAY_KEY
 
 
 # ── paths ────────────────────────────────────────────────────────────────
@@ -203,44 +195,80 @@ def _default_env_path() -> Path:
     return default_home() / ".env"
 
 
-def get_settings(env: str) -> Dict[str, str]:
-    """Return {url, mcp_api_key, gateway_key} for one environment."""
+def _first_filled(values: Dict[str, str], names: Tuple[str, ...]) -> str:
+    for name in names:
+        found = (values.get(name) or "").strip()
+        if found:
+            return found
+    return ""
+
+
+def migrate_legacy_settings() -> bool:
+    """Copy LOCAL/STG/PROD (and v1) keys into the unsuffixed names.
+
+    Runs when a new key is empty. Never overwrites a new key that is already
+    set. Leaves the old keys in place.
+    """
+    path = _default_env_path()
+    values = read_env_file(path)
+    updates: Dict[str, str] = {}
+    if not (values.get(KEY_MCP_URL) or "").strip():
+        carried = _first_filled(values, _LEGACY_URL_KEYS)
+        if carried:
+            updates[KEY_MCP_URL] = carried
+    if not (values.get(KEY_MCP_API_KEY) or "").strip():
+        carried = _first_filled(values, _LEGACY_MCP_KEY_KEYS)
+        if carried:
+            updates[KEY_MCP_API_KEY] = carried
+    if not (values.get(KEY_GATEWAY_KEY) or "").strip():
+        carried = _first_filled(values, _LEGACY_GATEWAY_KEYS)
+        if carried:
+            updates[KEY_GATEWAY_KEY] = carried
+    if not updates:
+        return False
+    values.update(updates)
+    write_env_file(path, values, header="# Hermes profile .env")
+    return True
+
+
+def get_settings() -> Dict[str, str]:
+    """Return {url, mcp_api_key, gateway_key}."""
+    migrate_legacy_settings()
     values = read_env_file(_default_env_path())
     return {
-        "url": values.get(key_mcp_url(env), ""),
-        "mcp_api_key": values.get(key_mcp_api_key(env), ""),
-        "gateway_key": values.get(key_gateway_key(env), ""),
+        "url": values.get(KEY_MCP_URL, ""),
+        "mcp_api_key": values.get(KEY_MCP_API_KEY, ""),
+        "gateway_key": values.get(KEY_GATEWAY_KEY, ""),
     }
 
 
 def save_settings(
-    env: str,
     *,
     url: Optional[str] = None,
     mcp_api_key: Optional[str] = None,
     gateway_key: Optional[str] = None,
 ) -> None:
-    """Update one environment's settings. ``None`` leaves a field untouched."""
+    """Update settings. ``None`` leaves a field untouched."""
     path = _default_env_path()
+    migrate_legacy_settings()
     values = read_env_file(path)
     if url is not None:
-        values[key_mcp_url(env)] = url.strip()
+        values[KEY_MCP_URL] = url.strip()
     if mcp_api_key is not None:
-        values[key_mcp_api_key(env)] = mcp_api_key.strip()
+        values[KEY_MCP_API_KEY] = mcp_api_key.strip()
     if gateway_key is not None:
-        values[key_gateway_key(env)] = gateway_key.strip()
+        values[KEY_GATEWAY_KEY] = gateway_key.strip()
     write_env_file(path, values, header="# Hermes profile .env")
 
 
-def check_gateway_key(env: str, presented: str) -> bool:
-    """Constant-time check of a bearer token against one environment's key.
+def check_gateway_key(presented: str) -> bool:
+    """Constant-time check of a bearer token against the gateway key.
 
-    This is what stops a staging deployment from provisioning (or reaching)
-    production profiles, and what stops an unauthenticated caller from creating
-    directories: profile resolution runs BEFORE the api_server's own auth check,
-    so the provisioner must authenticate the request itself.
+    Profile resolution runs BEFORE the api_server's own auth check, so the
+    provisioner must authenticate the request itself. That is what stops an
+    unauthenticated caller from creating directories.
     """
-    expected = get_settings(env).get("gateway_key") or ""
+    expected = get_settings().get("gateway_key") or ""
     if not expected or len(expected) < 16 or not presented:
         return False
     return hmac.compare_digest(str(presented).encode(), expected.encode())
@@ -265,7 +293,7 @@ def _yaml_single_quoted(value: str) -> str:
     return "'" + str(value or "").replace("'", "''") + "'"
 
 
-def _profile_config_yaml(env: str) -> str:
+def _profile_config_yaml() -> str:
     """config.yaml for a provisioned profile.
 
     ``platforms.api_server.enabled: false`` must be stated EXPLICITLY, not just
@@ -283,13 +311,10 @@ def _profile_config_yaml(env: str) -> str:
     load_config()`` honours the scoped HERMES_HOME (it does read this file) but
     resolves ``${VAR}`` against ``os.environ`` — the DEFAULT profile's values —
     before the profile-scoped interpolation in ``tools.mcp_tool`` ever sees a
-    placeholder. With placeholders here, every profile silently talks to
-    whichever environment the default profile points at, which is precisely the
-    staging/production mix-up this plugin exists to prevent. Verified on
-    Hermes v0.20.0. Cost of literals: rotating a key rewrites every profile —
+    placeholder. Cost of literals: rotating a key rewrites every profile —
     which ``resync_profile`` already does on every dashboard save.
     """
-    settings = get_settings(env)
+    settings = get_settings()
     return (
         _model_block()
         + "\n"
@@ -298,7 +323,7 @@ def _profile_config_yaml(env: str) -> str:
         "    enabled: false\n"
         "\n"
         "mcp_servers:\n"
-        f"  {mcp_server_name(env)}:\n"
+        f"  {MCP_SERVER_NAME}:\n"
         f"    url: {_yaml_single_quoted(settings['url'])}\n"
         "    headers:\n"
         "      Authorization: "
@@ -314,18 +339,17 @@ def _profile_config_yaml(env: str) -> str:
     )
 
 
-def _write_profile_config(target: Path, env: str) -> None:
+def _write_profile_config(target: Path) -> None:
     """Write config.yaml at 0600 — it carries the MCP bearer token verbatim."""
     path = target / "config.yaml"
-    path.write_text(_profile_config_yaml(env), encoding="utf-8")
+    path.write_text(_profile_config_yaml(), encoding="utf-8")
     os.chmod(path, 0o600)
 
 
-def _profile_env_values(env: str) -> Dict[str, str]:
-    settings = get_settings(env)
+def _profile_env_values() -> Dict[str, str]:
+    settings = get_settings()
     values = {
         "API_SERVER_KEY": settings["gateway_key"],
-        "TCC_ACTIVE_MCP_ENV": env,
         "TCC_ACTIVE_MCP_URL": settings["url"],
         "TCC_ACTIVE_MCP_API_KEY": settings["mcp_api_key"],
     }
@@ -335,7 +359,7 @@ def _profile_env_values(env: str) -> Dict[str, str]:
     return values
 
 
-def _materialize(target: Path, env: str) -> None:
+def _materialize(target: Path) -> None:
     """Build a complete profile in a temp dir, then move it into place.
 
     Built out-of-place so a concurrent first-chat from the same user can never
@@ -346,10 +370,10 @@ def _materialize(target: Path, env: str) -> None:
         tempfile.mkdtemp(dir=str(target.parent), prefix=f".tmp-{target.name}-")
     )
     try:
-        _write_profile_config(staging, env)
+        _write_profile_config(staging)
         write_env_file(
             staging / ".env",
-            _profile_env_values(env),
+            _profile_env_values(),
             header="# Managed by tcc-mcp-config — do not edit by hand.",
         )
         (staging / "memories").mkdir(exist_ok=True)
@@ -382,29 +406,25 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
     ``exists`` or a short refusal reason. Never raises for an ordinary refusal —
     callers use this on the request path.
     """
-    match = PROFILE_RE.match(name or "")
-    if not match:
+    if not PROFILE_RE.match(name or ""):
         return False, "invalid profile name"
-    env = match.group(1)
 
-    settings = get_settings(env)
+    settings = get_settings()
     if not settings["gateway_key"]:
-        return False, f"environment {env} has no gateway key configured"
+        return False, "no gateway key configured"
     if not settings["url"] or not settings["mcp_api_key"]:
-        return False, f"environment {env} is not configured"
-    if not check_gateway_key(env, bearer):
+        return False, "mcp is not configured"
+    if not check_gateway_key(bearer):
         return False, "unauthorized"
 
     target = profile_dir(name)
     if target.is_dir():
         if is_complete(target):
             return True, "exists"
-        # Half-deleted or skeleton-only: rewrite the generated files in place.
-        # Memory and sessions, if any survived, are left untouched.
-        _write_profile_config(target, env)
+        _write_profile_config(target)
         write_env_file(
             target / ".env",
-            _profile_env_values(env),
+            _profile_env_values(),
             header="# Managed by tcc-mcp-config — do not edit by hand.",
         )
         (target / "memories").mkdir(exist_ok=True)
@@ -418,25 +438,23 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
     except OSError:
         pass
 
-    _materialize(target, env)
+    _materialize(target)
     return True, "created"
 
 
 def resync_profile(name: str) -> bool:
     """Rewrite an existing profile's config/.env from current settings.
 
-    Used after the operator rotates a key or repoints an environment. Memory and
+    Used after the operator rotates a key or repoints MCP. Memory and
     sessions are untouched — only the generated files are replaced.
     """
-    match = PROFILE_RE.match(name or "")
     target = profile_dir(name)
-    if not match or not target.is_dir():
+    if not PROFILE_RE.match(name or "") or not target.is_dir():
         return False
-    env = match.group(1)
-    _write_profile_config(target, env)
+    _write_profile_config(target)
     write_env_file(
         target / ".env",
-        _profile_env_values(env),
+        _profile_env_values(),
         header="# Managed by tcc-mcp-config — do not edit by hand.",
     )
     return True
@@ -446,9 +464,9 @@ def _live_state_path() -> Path:
     return default_home() / ".tcc-mcp-config-live.json"
 
 
-def _fingerprint(env: str) -> str:
-    """Identify an environment's MCP wiring without storing the key."""
-    settings = get_settings(env)
+def _fingerprint() -> str:
+    """Identify MCP wiring without storing the key."""
+    settings = get_settings()
     if not settings["url"] or not settings["mcp_api_key"]:
         return ""
     raw = settings["url"] + "\0" + settings["mcp_api_key"]
@@ -460,43 +478,33 @@ def mark_live() -> None:
 
     Hermes connects MCP servers ONCE per process. Everything the dashboard
     writes afterwards is only a promise about the NEXT restart, so without this
-    marker the UI cannot tell "configured" from "actually serving traffic" — and
-    it would cheerfully show a freshly-configured environment as ready while
-    every chat turn in it has no tools at all.
+    marker the UI cannot tell "configured" from "actually serving traffic".
     """
-    state = {env: _fingerprint(env) for env in ENVIRONMENTS}
+    state = {"fingerprint": _fingerprint()}
     try:
         _live_state_path().write_text(json.dumps(state), encoding="utf-8")
     except OSError:
         pass
 
 
-def live_environments() -> Dict[str, bool]:
-    """Per environment: is the CURRENT config the one the gateway is running?"""
+def is_live() -> bool:
+    """Is the CURRENT config the one the gateway is running?"""
     try:
         state = json.loads(_live_state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         state = {}
-    result = {}
-    for env in ENVIRONMENTS:
-        current = _fingerprint(env)
-        result[env] = bool(current) and state.get(env) == current
-    return result
+    current = _fingerprint()
+    return bool(current) and state.get("fingerprint") == current
 
 
 def sync_default_profile_servers() -> bool:
-    """Declare every configured environment's MCP server on the DEFAULT profile.
+    """Declare the MCP server on the DEFAULT profile.
 
-    This is what actually gets the connections made. Hermes runs MCP discovery
+    This is what actually gets the connection made. Hermes runs MCP discovery
     ONCE, at gateway startup, under the default profile — ``discover_mcp_tools``
     is never called again under a ``/p/<profile>/`` runtime scope, so a server
     that only ever appears in a user profile's config.yaml is never connected
     and that user's turn has no tools at all.
-
-    A per-profile turn still only *sees* the servers its own config.yaml names,
-    so declaring all three here does not leak production tools into a staging
-    user's turn: the default profile owns the connections, each user profile
-    selects exactly one of them by name.
 
     Returns True when the file changed. Idempotent — called on every gateway
     start and after every dashboard save.
@@ -518,16 +526,13 @@ def sync_default_profile_servers() -> bool:
         config["mcp_servers"] = servers = {}
 
     changed = False
-    for env in ENVIRONMENTS:
-        settings = get_settings(env)
-        name = mcp_server_name(env)
-        if not settings["url"] or not settings["mcp_api_key"]:
-            # Never leave a half-configured server behind: it would fail to
-            # connect on every startup and sit in the reconnect backoff.
-            if name in servers:
-                del servers[name]
-                changed = True
-            continue
+    settings = get_settings()
+    name = MCP_SERVER_NAME
+    if not settings["url"] or not settings["mcp_api_key"]:
+        if name in servers:
+            del servers[name]
+            changed = True
+    else:
         want_auth = f"Bearer {settings['mcp_api_key']}"
         entry = servers.get(name)
         if not isinstance(entry, dict):
@@ -542,6 +547,11 @@ def sync_default_profile_servers() -> bool:
             changed = True
         if headers.get("Authorization") != want_auth:
             headers["Authorization"] = want_auth
+            changed = True
+
+    for leftover in _LEGACY_SERVER_NAMES:
+        if leftover in servers:
+            del servers[leftover]
             changed = True
 
     if not changed:
@@ -565,16 +575,13 @@ def sync_default_profile_servers() -> bool:
     return True
 
 
-def list_profiles() -> Dict[str, int]:
-    """Count provisioned per-user profiles per environment (for the dashboard)."""
-    counts = {env: 0 for env in ENVIRONMENTS}
+def list_profiles() -> int:
+    """Count provisioned per-user profiles (for the dashboard)."""
+    count = 0
     try:
         for entry in profiles_root().iterdir():
-            if not entry.is_dir():
-                continue
-            match = PROFILE_RE.match(entry.name)
-            if match:
-                counts[match.group(1)] += 1
+            if entry.is_dir() and PROFILE_RE.match(entry.name):
+                count += 1
     except OSError:
         pass
-    return counts
+    return count

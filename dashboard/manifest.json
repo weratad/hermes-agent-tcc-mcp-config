@@ -1,9 +1,9 @@
 {
   "name": "tcc-mcp-config",
   "label": "TCC MCP Config",
-  "description": "MCP แยก Local / Staging / Production และโปรไฟล์ต่อผู้ใช้",
+  "description": "MCP หนึ่งช่อง และโปรไฟล์ต่อผู้ใช้",
   "icon": "Plug",
-  "version": "2.2.0",
+  "version": "2.4.1",
   "tab": {
     "path": "/tcc-mcp-config",
     "position": "before:profiles"

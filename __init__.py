@@ -1,12 +1,11 @@
-"""TCC MCP Config — one gateway, three environments, one profile per user.
+"""TCC MCP Config — one gateway, one MCP, one profile per user.
 
 Three responsibilities, deliberately in ONE plugin so they cannot drift apart:
 
-1. ``environments`` — the MCP URL / MCP key / gateway key for ``local``,
-   ``stg`` and ``prod``, all live at the same time. Edited from the dashboard
-   tab (``dashboard/``), materialized into every profile.
-2. ``provisioner`` — creates ``<env>-api-<staff|user>-<id>`` the first time that
-   user chats, so each user gets their own ``memories/MEMORY.md``.
+1. ``environments`` — the MCP URL / MCP key / gateway key. Edited from the
+   dashboard tab (``dashboard/``), materialized into every profile.
+2. ``provisioner`` — creates ``staff-<id>`` / ``user-<id>[-store-<id>]`` the
+   first time that user chats, so each user gets their own ``memories/MEMORY.md``.
 3. ``principal_injector`` — stamps the authenticated session key onto every TCC
    MCP call. Without it every call is fail-closed and answers come back empty.
 
@@ -46,13 +45,13 @@ def register(ctx) -> None:
         if environments.sync_default_profile_servers():
             _log.info("tcc-mcp-config: refreshed MCP servers on the default profile")
         # Record what THIS process will connect with, so the dashboard can tell
-        # "saved" from "actually running" and stop claiming an environment is
-        # ready when it is only ready after the next restart.
+        # "saved" from "actually running" and stop claiming MCP is ready when
+        # it is only ready after the next restart.
         environments.mark_live()
     except Exception:
         _log.exception(
-            "tcc-mcp-config: could not declare the per-environment MCP servers — "
+            "tcc-mcp-config: could not declare the MCP server — "
             "chat turns may find no tools until this is fixed"
         )
 
-    _log.info("tcc-mcp-config ready (environments: %s)", ", ".join(environments.ENVIRONMENTS))
+    _log.info("tcc-mcp-config ready (mcp server: %s)", environments.MCP_SERVER_NAME)
