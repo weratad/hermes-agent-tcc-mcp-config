@@ -214,7 +214,9 @@ hermes dashboard --host 0.0.0.0 --port <port> --skip-build   # หรือ rest
 > **เช็คสถานะไม่ได้ด้วย curl เปล่าๆ:** auth gate ตอบ **401** ก่อน routing เสมอ (กันคนนอก fingerprint ว่ามีปลั๊กอินอะไร) — ทั้งตอน 404 และตอนปกติ curl จะได้ 401 เหมือนกัน ต้องดูจาก **เบราว์เซอร์ที่ login แล้ว** (session ผ่าน auth) ถึงจะแยก 404 (ยังไม่ mount) กับ 200 (mount แล้ว) ได้จริง
 
 ### Chat ตอบ "ระบบผู้ช่วยยังไม่พร้อม" / 401
-3 คีย์ไม่ตรงกัน (ดูตารางด้านบน) — เช็ค `HERMES_API_KEY` = `TCC_GATEWAY_KEY` และ `MCP_TOKEN` (tcc-api) = `TCC_MCP_KEY`
+Guest `/v1` ผ่านแต่ login `/p/<profile>/` 401 = โปรไฟล์ถือ `API_SERVER_KEY` คนละดอกกับบ้าน default — plugin 2.4.3+ copy คีย์ default ลงทุกโปรไฟล์ตอน ensure/resync
+
+3 คีย์ไม่ตรงกัน (ดูตารางด้านบน) — เช็ค `HERMES_API_KEY` = `API_SERVER_KEY` ของ default (และ `TCC_GATEWAY_KEY` ถ้ายังไม่ drift) และ `MCP_TOKEN` (tcc-api) = `TCC_MCP_KEY`
 
 ### เปลี่ยน MCP URL/key แล้วแต่ tool ยังใช้ค่าเก่า
 ต้อง **restart gateway** (Hermes ต่อ MCP ตอน start ครั้งเดียว) — badge จะขึ้น "Restart"

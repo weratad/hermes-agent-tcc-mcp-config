@@ -2,6 +2,15 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.4.3] — 2026-08-26
+
+### Fixed
+- โปรไฟล์ `/p/<user>/` copy `API_SERVER_KEY` จากบ้าน default (คีย์ที่ guest `/v1` ใช้) ไม่ใช้ `TCC_GATEWAY_KEY` ที่ drift แล้วทำให้ login 401 ทั้งที่ guest ผ่าน
+- `ensure` รับ bearer ได้ทั้ง `API_SERVER_KEY` และ `TCC_GATEWAY_KEY`
+- โปรไฟล์ที่มี `.env` ครบแต่คีย์เก่า จะถูก rewrite ตอน ensure ไม่ skip เป็น `exists`
+
+[2.4.3]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.4.3
+
 ## [2.4.2] — 2026-08-25
 
 ### Changed

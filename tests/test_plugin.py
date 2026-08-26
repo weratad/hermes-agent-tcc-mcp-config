@@ -93,6 +93,12 @@ def main():
 
     print("\n4. gateway key check")
     check("correct key accepted", envs.check_gateway_key("stg-gateway-key-0123456789"))
+    # /v1 chat authenticates against default API_SERVER_KEY, which can drift
+    # from TCC_GATEWAY_KEY. Login /p/ and ensure must accept that same key.
+    check(
+        "default API_SERVER_KEY also accepted",
+        envs.check_gateway_key("legacy-default-key-0123456789abcdef"),
+    )
     check("wrong key refused", not envs.check_gateway_key("nope"))
     check("empty refused", not envs.check_gateway_key(""))
     # Short keys never authenticate, even if someone wrote one by hand.
@@ -126,7 +132,10 @@ def main():
     check("memory toolset enabled", "- memory" in config)
     check("memory enabled", "memory_enabled: true" in config)
     check("model block carried over", "gpt-5.4-mini" in config)
-    check("API_SERVER_KEY = env gateway key", env_values.get("API_SERVER_KEY") == "stg-gateway-key-0123456789")
+    check(
+        "API_SERVER_KEY follows default /v1 key, not drifted TCC_GATEWAY_KEY",
+        env_values.get("API_SERVER_KEY") == "legacy-default-key-0123456789abcdef",
+    )
     check("MCP url materialized", env_values.get("TCC_ACTIVE_MCP_URL") == "https://api.tcc-stg.com/mcp")
     check("MCP key materialized", env_values.get("TCC_ACTIVE_MCP_API_KEY") == "stg-mcp")
     check("no TCC_ACTIVE_MCP_ENV", "TCC_ACTIVE_MCP_ENV" not in env_values)
@@ -163,14 +172,30 @@ def main():
     check("separate files", a.read_text() != b.read_text())
     check("profile count is an int", envs.list_profiles() == 2, envs.list_profiles())
 
-    print("\n8. resync after a key rotation")
-    envs.save_settings(gateway_key="rotated-gateway-key-abcdefghij")
+    print("\n8. resync after default API_SERVER_KEY rotation")
+    raw = envs.read_env_file(SANDBOX / ".env")
+    raw["API_SERVER_KEY"] = "rotated-api-server-key-abcdefghij"
+    envs.write_env_file(SANDBOX / ".env", raw)
     check("resync reports success", envs.resync_profile("user-2520153"))
     check(
-        "profile picked up new key",
-        envs.read_env_file(root / ".env").get("API_SERVER_KEY") == "rotated-gateway-key-abcdefghij",
+        "profile picked up default API_SERVER_KEY",
+        envs.read_env_file(root / ".env").get("API_SERVER_KEY") == "rotated-api-server-key-abcdefghij",
     )
     check("memory survived resync", a.read_text().strip() == "- user 2520153 likes weekly summaries")
+
+    print("\n8b. complete profile with a stale key repairs on ensure")
+    stale = envs.read_env_file(root / ".env")
+    stale["API_SERVER_KEY"] = "stale-profile-key-0123456789ab"
+    envs.write_env_file(root / ".env", stale)
+    ok, detail = envs.ensure_profile(
+        "user-2520153", bearer="rotated-api-server-key-abcdefghij"
+    )
+    check("stale complete profile is repaired", ok and detail == "repaired", detail)
+    check(
+        "stale key replaced with default API_SERVER_KEY",
+        envs.read_env_file(root / ".env").get("API_SERVER_KEY")
+        == "rotated-api-server-key-abcdefghij",
+    )
 
     print("\n9. do not overwrite new keys on migrate")
     envs.save_settings(url="https://api.theconcert.com/mcp")

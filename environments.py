@@ -109,12 +109,11 @@ def key_mcp_api_key() -> str:
 
 
 def key_gateway_key() -> str:
-    """The API_SERVER_KEY every profile authenticates with.
+    """Dashboard field ``TCC_GATEWAY_KEY``.
 
-    All profiles deliberately SHARE this value: the caller is tcc-ai-assistant
-    (a trusted backend holding one HERMES_API_KEY), never the end user.
-    Per-user isolation comes from the profile in the URL and the principal in
-    X-Hermes-Session-Key — not from this key.
+    Chat auth on ``/p/<profile>/`` copies default ``API_SERVER_KEY`` (see
+    ``_default_api_server_key``), because that is what Hermes ``/v1`` checks.
+    ``TCC_GATEWAY_KEY`` is still accepted as an alias when the two have drifted.
     """
     return KEY_GATEWAY_KEY
 
@@ -263,17 +262,58 @@ def save_settings(
     write_env_file(path, values, header="# Hermes profile .env")
 
 
+def _filled_auth_key(values: Dict[str, str], name: str) -> str:
+    found = (values.get(name) or "").strip()
+    return found if len(found) >= 16 else ""
+
+
+def _default_api_server_key() -> str:
+    """Key Hermes ``/v1`` checks on the default home.
+
+    Multiplex ``secret_scope`` is fail-closed: a ``/p/<profile>/`` request never
+    reads the default ``.env``. Each profile therefore gets a *copy* of this
+    value as its ``API_SERVER_KEY``. Prefer default ``API_SERVER_KEY`` over
+    ``TCC_GATEWAY_KEY`` so guest and logged-in chat stay in lockstep when the
+    dashboard gateway field has drifted.
+    """
+    migrate_legacy_settings()
+    values = read_env_file(_default_env_path())
+    return _filled_auth_key(values, "API_SERVER_KEY") or _filled_auth_key(
+        values, KEY_GATEWAY_KEY
+    )
+
+
 def check_gateway_key(presented: str) -> bool:
-    """Constant-time check of a bearer token against the gateway key.
+    """Constant-time check of a bearer token against default chat auth keys.
 
     Profile resolution runs BEFORE the api_server's own auth check, so the
     provisioner must authenticate the request itself. That is what stops an
     unauthenticated caller from creating directories.
+
+    Accepts default ``API_SERVER_KEY`` (what ``/v1`` uses) and ``TCC_GATEWAY_KEY``
+    (dashboard field) so a drifted pair does not 401 ``ensure`` for AIS.
     """
-    expected = get_settings().get("gateway_key") or ""
-    if not expected or len(expected) < 16 or not presented:
+    presented = str(presented or "")
+    if not presented:
         return False
-    return hmac.compare_digest(str(presented).encode(), expected.encode())
+    migrate_legacy_settings()
+    values = read_env_file(_default_env_path())
+    expected_keys: list = []
+    for name in ("API_SERVER_KEY", KEY_GATEWAY_KEY):
+        found = _filled_auth_key(values, name)
+        if found and found not in expected_keys:
+            expected_keys.append(found)
+    if not expected_keys:
+        return False
+    presented_b = presented.encode()
+    matched = False
+    for expected in expected_keys:
+        exp_b = expected.encode()
+        if len(exp_b) != len(presented_b):
+            hmac.compare_digest(presented_b, presented_b)
+            continue
+        matched = hmac.compare_digest(presented_b, exp_b) or matched
+    return matched
 
 
 # ── profile materialization ──────────────────────────────────────────────
@@ -351,7 +391,7 @@ def _write_profile_config(target: Path) -> None:
 def _profile_env_values() -> Dict[str, str]:
     settings = get_settings()
     values = {
-        "API_SERVER_KEY": settings["gateway_key"],
+        "API_SERVER_KEY": _default_api_server_key(),
         "TCC_ACTIVE_MCP_URL": settings["url"],
         "TCC_ACTIVE_MCP_API_KEY": settings["mcp_api_key"],
     }
@@ -412,7 +452,7 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
         return False, "invalid profile name"
 
     settings = get_settings()
-    if not settings["gateway_key"]:
+    if not _default_api_server_key():
         return False, "no gateway key configured"
     if not settings["url"] or not settings["mcp_api_key"]:
         return False, "mcp is not configured"
@@ -422,7 +462,18 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
     target = profile_dir(name)
     if target.is_dir():
         if is_complete(target):
-            return True, "exists"
+            wanted = _default_api_server_key()
+            have = (read_env_file(target / ".env").get("API_SERVER_KEY") or "").strip()
+            if have == wanted:
+                return True, "exists"
+            _write_profile_config(target)
+            write_env_file(
+                target / ".env",
+                _profile_env_values(),
+                header="# Managed by tcc-mcp-config — do not edit by hand.",
+            )
+            (target / "memories").mkdir(exist_ok=True)
+            return True, "repaired"
         _write_profile_config(target)
         write_env_file(
             target / ".env",
