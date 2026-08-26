@@ -75,14 +75,24 @@ def main():
     )
     check("user-5 unchanged", inj.mcp_principal_from_session("user-5") == "user-5")
     check("staff-1 unchanged", inj.mcp_principal_from_session("staff-1") == "staff-1")
-    _orig_principal = inj._current_trusted_principal
-    inj._current_trusted_principal = lambda: "organizer-5"
+    check("organizer-5 surface sales", inj.mcp_surface_from_session("organizer-5") == "sales")
+    check("staff-1 surface sales", inj.mcp_surface_from_session("staff-1") == "sales")
+    check("user-5 surface catalog", inj.mcp_surface_from_session("user-5") == "catalog")
+    check("guest-anon surface catalog", inj.mcp_surface_from_session("guest-anon") == "catalog")
+    _orig_session = inj._current_session_key
+    inj._current_session_key = lambda: "organizer-5"
     _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__list_my_concerts", args={})
     check("inject rewrites organizer", (_out or {}).get("args", {}).get("_hermes_principal") == "user-5")
-    inj._current_trusted_principal = lambda: "user-5"
-    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__list_my_concerts", args={})
+    check("inject organizer surface sales", (_out or {}).get("args", {}).get("_hermes_surface") == "sales")
+    inj._current_session_key = lambda: "user-5"
+    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__search_events", args={})
     check("inject leaves user", (_out or {}).get("args", {}).get("_hermes_principal") == "user-5")
-    inj._current_trusted_principal = _orig_principal
+    check("inject member surface catalog", (_out or {}).get("args", {}).get("_hermes_surface") == "catalog")
+    inj._current_session_key = lambda: "guest-anon"
+    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__search_events", args={"_hermes_surface": "sales"})
+    check("guest has no principal", "_hermes_principal" not in ((_out or {}).get("args") or {}))
+    check("guest surface catalog (strips forge)", (_out or {}).get("args", {}).get("_hermes_surface") == "catalog")
+    inj._current_session_key = _orig_session
 
     print("\n2. patches install onto the real class")
     from gateway.platforms.api_server import APIServerAdapter as ApiServerPlatform, _PROFILE_REJECTED

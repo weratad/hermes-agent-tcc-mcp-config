@@ -65,6 +65,7 @@ def main():
     text = (SANDBOX / "config.yaml").read_text(encoding="utf-8")
     check("tcc-api declared", "tcc-api:" in text)
     check("leftover tcc-api-stg removed", "tcc-api-stg:" not in text)
+    check("leftover tcc-catalog removed", "tcc-catalog:" not in text)
     check("second call is a no-op", envs.sync_default_profile_servers() is False)
 
     print("\n7. un-configuring removes the server")

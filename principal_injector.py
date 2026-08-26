@@ -1,16 +1,15 @@
-"""Trusted principal injection for TCC MCP tool calls.
+"""Trusted principal + surface injection for TCC MCP tool calls.
 
-The principal is derived from the API-key-authenticated Hermes session context,
-never from the model. Any model-supplied ``_hermes_principal`` is removed before
-dispatch, so a prompt-injected value can't widen a caller's scope.
+The principal and surface are derived from the API-key-authenticated Hermes
+session context, never from the model. Any model-supplied ``_hermes_principal``
+or ``_hermes_surface`` is removed before dispatch.
 
-This is the security boundary for cross-store data access: without a principal
-the TCC MCP server falls back to its fail-closed staff-id-0 scope (sees nothing).
+Surfaces (same POST /mcp):
+    staff-* / organizer-*  → sales
+    user-* / guest-anon / anything else → catalog
 
-Note that this is a SEPARATE axis from the per-user profile. The profile decides
-whose *memory* the turn uses; the principal decides what the MCP server will
-show. Both must be right, and they come from different places — the profile
-from the URL, the principal from the header.
+This is the security boundary that keeps AI ASK members off organizer sales
+tools even though Hermes discovers the full tool list at gateway startup.
 """
 
 from __future__ import annotations
@@ -54,8 +53,16 @@ def mcp_principal_from_session(session_key: str) -> str:
     return session_key
 
 
-def _current_trusted_principal() -> str:
-    """Return the validated API-key-authenticated gateway session key."""
+def mcp_surface_from_session(session_key: str) -> str:
+    """staff/organizer may call sales tools; members and guests may call catalog tools."""
+    key = str(session_key or "").strip()
+    if key.startswith("staff-") or key.startswith("organizer-"):
+        return "sales"
+    return "catalog"
+
+
+def _current_session_key() -> str:
+    """Return the API-key-authenticated gateway session key (unvalidated)."""
     try:
         from tools.approval import get_current_session_key
 
@@ -63,8 +70,12 @@ def _current_trusted_principal() -> str:
     except Exception:
         _log.exception("Could not resolve the trusted Hermes session key")
         return ""
+    return str(session_key or "").strip()
 
-    normalized = str(session_key or "").strip()
+
+def _current_trusted_principal() -> str:
+    """Return the validated API-key-authenticated gateway session key."""
+    normalized = _current_session_key()
     if not normalized:
         return ""
     if not _PRINCIPAL_RE.fullmatch(normalized):
@@ -79,23 +90,30 @@ def inject_tcc_mcp_principal(
     args: Dict[str, Any],
     **_: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Rewrite only TCC MCP calls with a server-trusted principal."""
+    """Rewrite only TCC MCP calls with a server-trusted principal and surface."""
     if not _TOOL_RE.match(str(tool_name or "")):
         return None
 
     rewritten = dict(args or {})
     rewritten.pop("_hermes_principal", None)
+    rewritten.pop("_hermes_surface", None)
 
-    principal = _current_trusted_principal()
-    if principal:
-        mcp_principal = mcp_principal_from_session(principal)
+    session = _current_session_key()
+    surface = mcp_surface_from_session(session)
+    rewritten["_hermes_surface"] = surface
+
+    if session and _PRINCIPAL_RE.fullmatch(session):
+        mcp_principal = mcp_principal_from_session(session)
         rewritten["_hermes_principal"] = mcp_principal
-        _log.info("injected _hermes_principal=%s into %s", mcp_principal, tool_name)
-    else:
-        # The single most confusing failure in this system: the call succeeds,
-        # the MCP server falls back to its staff-id-0 scope, and the user is
-        # told "0 concerts" as though that were the answer. Never let that
-        # happen silently.
+        _log.info(
+            "injected _hermes_principal=%s _hermes_surface=%s into %s",
+            mcp_principal,
+            surface,
+            tool_name,
+        )
+    elif surface == "sales":
+        # Sales tools fail-closed at staff-id-0 without a principal. Catalog
+        # guests (guest-anon) are expected to have no principal.
         _log.warning(
             "NO principal resolved for %s — the MCP server will fail closed and "
             "answer as if the account owns nothing. The gateway session key was "

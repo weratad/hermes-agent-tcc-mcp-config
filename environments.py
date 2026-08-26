@@ -80,7 +80,9 @@ _LEGACY_GATEWAY_KEYS = (
     "TCC_GATEWAY_KEY_PROD",
     "API_SERVER_KEY",
 )
-_LEGACY_SERVER_NAMES = tuple(f"{MCP_SERVER_NAME}-{s.lower()}" for s in _LEGACY_SUFFIXES)
+_LEGACY_SERVER_NAMES = tuple(f"{MCP_SERVER_NAME}-{s.lower()}" for s in _LEGACY_SUFFIXES) + (
+    "tcc-catalog",
+)
 
 # Provider credentials copied from the default profile into each new profile.
 # A WHITELIST on purpose: copying the whole .env would drag platform tokens
@@ -552,6 +554,13 @@ def sync_default_profile_servers() -> bool:
     for leftover in _LEGACY_SERVER_NAMES:
         if leftover in servers:
             del servers[leftover]
+            changed = True
+
+    toolsets = config.get("platform_toolsets")
+    if isinstance(toolsets, dict):
+        api_server = toolsets.get("api_server")
+        if isinstance(api_server, list) and "tcc-catalog" in api_server:
+            api_server.remove("tcc-catalog")
             changed = True
 
     if not changed:
