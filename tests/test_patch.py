@@ -85,11 +85,11 @@ def main():
     check("inject rewrites organizer", (_out or {}).get("args", {}).get("_hermes_principal") == "user-5")
     check("inject organizer surface sales", (_out or {}).get("args", {}).get("_hermes_surface") == "sales")
     inj._current_session_key = lambda: "user-5"
-    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__search_events", args={})
+    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__find_events", args={})
     check("inject leaves user", (_out or {}).get("args", {}).get("_hermes_principal") == "user-5")
     check("inject member surface catalog", (_out or {}).get("args", {}).get("_hermes_surface") == "catalog")
     inj._current_session_key = lambda: "guest-anon"
-    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__search_events", args={"_hermes_surface": "sales"})
+    _out = inj.inject_tcc_mcp_principal(tool_name="mcp__tcc_api__find_events", args={"_hermes_surface": "sales"})
     check("guest has no principal", "_hermes_principal" not in ((_out or {}).get("args") or {}))
     check("guest surface catalog (strips forge)", (_out or {}).get("args", {}).get("_hermes_surface") == "catalog")
     inj._current_session_key = _orig_session
