@@ -10,13 +10,18 @@ Surfaces (same POST /mcp):
 
 This is the security boundary that keeps AI ASK members off organizer sales
 tools even though Hermes discovers the full tool list at gateway startup.
+
+Discovery stays process-global. Before each model call, ``llm_request``
+middleware drops the other surface's TCC tools so the model only sees the
+menu for this session. ``tool_request`` still overwrites principal and
+surface on the call, so a forged tool name cannot cross surfaces.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .environments import MCP_SERVER_NAME
 
@@ -40,6 +45,31 @@ TOOL_PREFIX = "mcp__" + re.sub(r"[^A-Za-z0-9_]", "_", MCP_SERVER_NAME)
 
 # staff-<id> | user-<id> | organizer-<id> | same with -store-<id>
 _PRINCIPAL_RE = re.compile(r"^(?:staff|user|organizer)-\d+(?:-store-\d+)?$")
+_TOOL_INTENT_RE = re.compile(r"(?:^|\n)ToolIntent:\s*(event|similar|other)\s*(?:\n|$)")
+
+# Guest/member menus — split by ToolIntent so store asks do not fall back to find_events.
+EVENT_TOOL_NAMES = frozenset({
+    "find_events",
+    "get_event",
+})
+STORE_TOOL_NAMES = frozenset({
+    "search_stores",
+    "list_stores",
+    "get_store",
+})
+# Union kept for diagnostics/tests that still reference the old name.
+CATALOG_TOOL_NAMES = EVENT_TOOL_NAMES | STORE_TOOL_NAMES
+SALES_TOOL_NAMES = frozenset({
+    "list_my_concerts",
+    "get_sales_overview", "get_ticket_sales", "get_sales", "get_top_buyers",
+    "get_buyer_insights", "get_order_status_summary", "get_payment_channels",
+    "get_ticket_inventory", "get_checkin_summary", "get_order", "get_ticket",
+    "get_transfers", "get_refunds", "get_resells",
+    "simulate_fee",
+    "get_event_schedule",
+    "get_reserve_overview", "get_reserve_bookings", "get_reserve_agents",
+    "get_reserve_order_status",
+})
 
 
 def mcp_principal_from_session(session_key: str) -> str:
@@ -125,7 +155,109 @@ def inject_tcc_mcp_principal(
     return {"args": rewritten, "source": "tcc_mcp_config_principal_injector"}
 
 
+def tcc_tool_leaf(tool_name: str) -> Optional[str]:
+    """Return the catalog/sales name, or None when this is not a TCC MCP tool."""
+    name = str(tool_name or "")
+    match = _TOOL_RE.match(name)
+    if not match:
+        return None
+    leaf = name[match.end():]
+    return leaf or None
+
+
+def _tool_entry_name(entry: Any) -> str:
+    """OpenAI ``function.name``, Responses ``name``, or a bare Hermes tool dict."""
+    if not isinstance(entry, dict):
+        return ""
+    function = entry.get("function")
+    if isinstance(function, dict) and function.get("name"):
+        return str(function["name"])
+    return str(entry.get("name") or "")
+
+
+def tool_intent_from_request(request: Dict[str, Any]) -> str:
+    """Read the server-generated marker from Chat or Responses system input."""
+    instructions = request.get("instructions")
+    if isinstance(instructions, str):
+        match = _TOOL_INTENT_RE.search(instructions)
+        if match:
+            return match.group(1)
+
+    messages = request.get("messages")
+    if not isinstance(messages, list):
+        return "other"
+    intent = "other"
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        match = _TOOL_INTENT_RE.search(content)
+        if match:
+            intent = match.group(1)
+    return intent
+
+
+def filter_tools_for_session(
+    tools: List[Any],
+    session_key: str,
+    tool_intent: str = "other",
+) -> tuple:
+    """Drop TCC tools that do not belong to this session. Other tools stay."""
+    surface = mcp_surface_from_session(session_key)
+    if surface == "sales":
+        allowed = SALES_TOOL_NAMES
+    elif tool_intent in ("event", "similar"):
+        allowed = EVENT_TOOL_NAMES
+    elif tool_intent == "other":
+        allowed = STORE_TOOL_NAMES
+    else:
+        allowed = frozenset()
+    kept: List[Any] = []
+    dropped = 0
+    for entry in tools:
+        leaf = tcc_tool_leaf(_tool_entry_name(entry))
+        if leaf is not None and leaf not in allowed:
+            dropped += 1
+            continue
+        kept.append(entry)
+    return kept, dropped
+
+
+def filter_llm_tool_menu(
+    *,
+    request: Dict[str, Any],
+    **_: Any,
+) -> Optional[Dict[str, Any]]:
+    """Hide the other surface's TCC tools before the provider sees the request."""
+    if not isinstance(request, dict):
+        return None
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return None
+
+    session = _current_session_key()
+    tool_intent = tool_intent_from_request(request)
+    kept, dropped = filter_tools_for_session(tools, session, tool_intent)
+    if dropped == 0:
+        return None
+
+    surface = mcp_surface_from_session(session)
+    next_request = dict(request)
+    next_request["tools"] = kept
+    _log.info(
+        "tcc tool menu surface=%s intent=%s kept=%s dropped=%s",
+        surface,
+        tool_intent,
+        len(kept),
+        dropped,
+    )
+    return {"request": next_request, "source": "tcc_mcp_config_tool_menu"}
+
+
 def register(ctx) -> None:
-    """Register trusted principal propagation before tool dispatch."""
+    """Register trusted principal propagation and the per-session tool menu."""
     ctx.register_middleware("tool_request", inject_tcc_mcp_principal)
+    ctx.register_middleware("llm_request", filter_llm_tool_menu)
     _log.info("tcc-mcp-config: principal injector armed for %s", _TOOL_RE.pattern)
