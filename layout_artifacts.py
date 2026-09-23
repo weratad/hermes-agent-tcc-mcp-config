@@ -530,7 +530,7 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
         prose_with_events = stored == "prose" and has_events
         missing = not _layout_called_this_turn(*keys)
         if missing or prose_with_events or price_compare_miss:
-            if price_compare_miss and not has_catalog:
+            if price_compare_miss:
                 retry_message = RETRY_PRICE_COMPARE_MESSAGE
             elif prose_with_events:
                 retry_message = RETRY_PROSE_WITH_CATALOG_MESSAGE

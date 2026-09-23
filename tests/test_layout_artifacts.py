@@ -441,6 +441,58 @@ def test_price_compare_without_catalog_still_retries():
     assert "present_layout(compare_value)" in m.RETRY_PRICE_COMPARE_MESSAGE
 
 
+def test_price_compare_clarify_without_events_uses_price_compare_retry():
+    """Clarify chips alone must not force generic RETRY_USER_MESSAGE on price_compare_miss."""
+    m = load()
+    key = "price-compare-clarify-only"
+    m._ensure_armed = lambda: None
+    m._session_key_aliases = lambda: [key]
+    m._turn_state.layout_called = False
+    # Clarify chips present (sets has_catalog) but no events / catalog turn.
+    sys.modules["_tcc_clarify_artifacts_shared"] = {
+        "catalog_turns": {},
+        "bag": {
+            key: {
+                "clarify": {
+                    "question": "อยากเทียบแบบไหน?",
+                    "choices": ["เทียบโซน", "เทียบราคา"],
+                },
+                "expires": time.time() + 60,
+            }
+        },
+        "lock": threading.Lock(),
+    }
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {},
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+    calls = []
+
+    class Agent:
+        stream_delta_callback = object()
+
+    returned = m.maybe_retry_layout(
+        Agent(),
+        {
+            "final_response": "อยากเทียบกับอะไรเป็นพิเศษครับ?",
+            "messages": [
+                {"role": "user", "content": "เทียบราคา Night Market Live"},
+                {
+                    "role": "assistant",
+                    "content": "อยากเทียบกับอะไรเป็นพิเศษครับ?",
+                },
+            ],
+        },
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    assert returned is not None
+    assert len(calls) == 1
+    assert calls[0]["user_message"] == m.RETRY_PRICE_COMPARE_MESSAGE
+    assert calls[0]["user_message"] != m.RETRY_USER_MESSAGE
+
+
 def test_price_compare_reply_skips_ambiguous_unrelated_events():
     m = load()
     key = "price-compare-ambiguous"
@@ -487,5 +539,6 @@ if __name__ == "__main__":
     test_price_compare_reply_uses_get_event_tiers_and_compare_value()
     test_price_compare_reply_prefers_event_named_by_user()
     test_price_compare_without_catalog_still_retries()
+    test_price_compare_clarify_without_events_uses_price_compare_retry()
     test_price_compare_reply_skips_ambiguous_unrelated_events()
     print("tcc-layout-artifacts ok")
