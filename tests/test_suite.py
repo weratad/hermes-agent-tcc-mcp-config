@@ -18,7 +18,15 @@ import pytest
 PLUGIN = Path(__file__).resolve().parent.parent
 TESTS = Path(__file__).resolve().parent
 
-STANDALONE = ("test_plugin.py", "test_live.py", "test_principal.py")
+STANDALONE = (
+    "test_plugin.py",
+    "test_live.py",
+    "test_principal.py",
+    "test_ai_ask_profile.py",
+    "test_catalog_artifacts.py",
+    "test_clarify_artifacts.py",
+    "test_layout_artifacts.py",
+)
 HERMES = ("test_patch.py", "test_startup.py")
 
 

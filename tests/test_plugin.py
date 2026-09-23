@@ -130,6 +130,8 @@ def main():
     check("no ${} placeholder left to leak the default profile", "${" not in config)
     check("config.yaml is 0600 (holds the bearer)", oct((root / "config.yaml").stat().st_mode & 0o777) == "0o600")
     check("memory toolset enabled", "- memory" in config)
+    check("user profile gets clarify toolset", "- clarify" in config)
+    check("user profile gets tcc-layout toolset", "- tcc-layout" in config)
     check("memory enabled", "memory_enabled: true" in config)
     check("model block carried over", "gpt-5.4-mini" in config)
     check(
@@ -165,6 +167,10 @@ def main():
 
     print("\n7. memory isolation between users")
     envs.ensure_profile("staff-689", bearer="stg-gateway-key-0123456789")
+    staff_cfg = (envs.profile_dir("staff-689") / "config.yaml").read_text(encoding="utf-8")
+    check("staff profile has memory toolset", "- memory" in staff_cfg)
+    check("staff profile has no clarify toolset", "- clarify" not in staff_cfg)
+    check("staff profile has no tcc-layout toolset", "- tcc-layout" not in staff_cfg)
     a = envs.profile_dir("user-2520153") / "memories" / "MEMORY.md"
     b = envs.profile_dir("staff-689") / "memories" / "MEMORY.md"
     a.write_text("- user 2520153 likes weekly summaries\n", encoding="utf-8")

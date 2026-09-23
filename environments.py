@@ -31,6 +31,20 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+def _load_ai_ask_profile():
+    try:
+        from . import ai_ask_profile as mod  # type: ignore
+        return mod
+    except ImportError:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "ai_ask_profile.py"
+        spec = importlib.util.spec_from_file_location("_tcc_ai_ask_profile", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(mod)
+        return mod
+
+
 # The ONLY profile names this plugin will ever create. Anything else is refused,
 # so a caller cannot steer directory creation with a crafted URL.
 #
@@ -335,7 +349,7 @@ def _yaml_single_quoted(value: str) -> str:
     return "'" + str(value or "").replace("'", "''") + "'"
 
 
-def _profile_config_yaml() -> str:
+def _profile_config_yaml(profile_name: str = "") -> str:
     """config.yaml for a provisioned profile.
 
     ``platforms.api_server.enabled: false`` must be stated EXPLICITLY, not just
@@ -348,6 +362,9 @@ def _profile_config_yaml() -> str:
     memory tool on the API-server path and can never write anything down — the
     whole point of one profile per user. MCP tools are not gated by this list.
 
+    AI Ask ``user-*`` profiles also get ``clarify`` + ``tcc-layout`` (bundled in
+    this plugin). Staff/organizer keep memory only.
+
     The MCP url and Authorization header are written as LITERALS, deliberately,
     even though a ``${VAR}`` placeholder would be tidier. ``hermes_cli.config.
     load_config()`` honours the scoped HERMES_HOME (it does read this file) but
@@ -356,7 +373,16 @@ def _profile_config_yaml() -> str:
     placeholder. Cost of literals: rotating a key rewrites every profile —
     which ``resync_profile`` already does on every dashboard save.
     """
+    is_user_profile_name = _load_ai_ask_profile().is_user_profile_name
+
     settings = get_settings()
+    toolsets = "    - memory\n"
+    if is_user_profile_name(profile_name):
+        toolsets = (
+            "    - memory\n"
+            "    - clarify\n"
+            "    - tcc-layout\n"
+        )
     return (
         _model_block()
         + "\n"
@@ -373,7 +399,7 @@ def _profile_config_yaml() -> str:
         "\n"
         "platform_toolsets:\n"
         "  api_server:\n"
-        "    - memory\n"
+        f"{toolsets}"
         "\n"
         "memory:\n"
         "  memory_enabled: true\n"
@@ -381,10 +407,11 @@ def _profile_config_yaml() -> str:
     )
 
 
-def _write_profile_config(target: Path) -> None:
+def _write_profile_config(target: Path, profile_name: str = "") -> None:
     """Write config.yaml at 0600 — it carries the MCP bearer token verbatim."""
     path = target / "config.yaml"
-    path.write_text(_profile_config_yaml(), encoding="utf-8")
+    name = (profile_name or target.name or "").strip()
+    path.write_text(_profile_config_yaml(name), encoding="utf-8")
     os.chmod(path, 0o600)
 
 
@@ -412,7 +439,7 @@ def _materialize(target: Path) -> None:
         tempfile.mkdtemp(dir=str(target.parent), prefix=f".tmp-{target.name}-")
     )
     try:
-        _write_profile_config(staging)
+        _write_profile_config(staging, profile_name=target.name)
         write_env_file(
             staging / ".env",
             _profile_env_values(),
@@ -466,7 +493,7 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
             have = (read_env_file(target / ".env").get("API_SERVER_KEY") or "").strip()
             if have == wanted:
                 return True, "exists"
-            _write_profile_config(target)
+            _write_profile_config(target, profile_name=target.name)
             write_env_file(
                 target / ".env",
                 _profile_env_values(),
@@ -474,7 +501,7 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
             )
             (target / "memories").mkdir(exist_ok=True)
             return True, "repaired"
-        _write_profile_config(target)
+        _write_profile_config(target, profile_name=target.name)
         write_env_file(
             target / ".env",
             _profile_env_values(),
@@ -504,7 +531,7 @@ def resync_profile(name: str) -> bool:
     target = profile_dir(name)
     if not PROFILE_RE.match(name or "") or not target.is_dir():
         return False
-    _write_profile_config(target)
+    _write_profile_config(target, profile_name=target.name)
     write_env_file(
         target / ".env",
         _profile_env_values(),

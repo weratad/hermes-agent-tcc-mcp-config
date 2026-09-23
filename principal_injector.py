@@ -240,6 +240,31 @@ def filter_llm_tool_menu(
     session = _current_session_key()
     tool_intent = tool_intent_from_request(request)
     kept, dropped = filter_tools_for_session(tools, session, tool_intent)
+
+    try:
+        from . import ai_ask_profile as _aap
+    except ImportError:
+        import importlib.util
+        from pathlib import Path as _P
+        _spec = importlib.util.spec_from_file_location(
+            "_tcc_ai_ask_profile", _P(__file__).resolve().parent / "ai_ask_profile.py"
+        )
+        _aap = importlib.util.module_from_spec(_spec)
+        assert _spec and _spec.loader
+        _spec.loader.exec_module(_aap)
+    AI_ASK_NATIVE_TOOLS = _aap.AI_ASK_NATIVE_TOOLS
+    is_ai_ask_user_profile = _aap.is_ai_ask_user_profile
+
+    if not is_ai_ask_user_profile():
+        narrowed: List[Any] = []
+        for entry in kept:
+            leaf = str(_tool_entry_name(entry) or "").replace("__", ".").split(".")[-1]
+            if leaf in AI_ASK_NATIVE_TOOLS:
+                dropped += 1
+                continue
+            narrowed.append(entry)
+        kept = narrowed
+
     if dropped == 0:
         return None
 

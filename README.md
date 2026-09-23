@@ -15,6 +15,7 @@
 | `environments` | เก็บ MCP URL / MCP key / gateway key แล้ว materialize ลงทุกโปรไฟล์ (แก้ผ่าน dashboard tab ได้) |
 | `provisioner` | สร้างโปรไฟล์ `staff-<id>` / `user-<id>[-store-<id>]` ครั้งแรกที่ผู้ใช้แชท + เพิ่ม endpoint `/internal/tcc-ai-assistant/profiles/ensure` เข้า gateway |
 | `principal_injector` | ประทับ session key ที่ authenticate แล้วลงทุก MCP call (ถ้าไม่มี = fail-closed ตอบว่าง) |
+| `catalog_artifacts` / `clarify_artifacts` / `layout_artifacts` | AI Ask เท่านั้น (`user-*`): แปะ `hermes.catalog` / `hermes.clarify` / `hermes.layout` + tool `present_layout` |
 
 พร้อม **dashboard tab "TCC MCP Config"** สำหรับตั้งค่า MCP + ดูรายชื่อโปรไฟล์ (ค้นหา/แบ่งหน้า)
 

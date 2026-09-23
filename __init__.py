@@ -9,6 +9,10 @@ Three responsibilities, deliberately in ONE plugin so they cannot drift apart:
 3. ``principal_injector`` — stamps the authenticated session key onto every TCC
    MCP call. Without it every call is fail-closed and answers come back empty.
 
+AI Ask artifacts (catalog / clarify / layout) are bundled here too so every
+``/p/user-*/`` request gets them process-wide — no per-profile plugin copies.
+They stay gated to ``user-*`` profiles only (staff/organizer are sales).
+
 Keeping them together matters: the tool prefix the injector matches is derived
 from the same ``MCP_SERVER_NAME`` the config writer and the profile template
 use, so renaming the MCP server cannot silently disarm injection — which is
@@ -25,9 +29,26 @@ from __future__ import annotations
 
 import logging
 
-from . import environments, log_scope, principal_injector, provisioner
+from . import (
+    catalog_artifacts,
+    clarify_artifacts,
+    environments,
+    layout_artifacts,
+    log_scope,
+    principal_injector,
+    provisioner,
+)
 
-__all__ = ["environments", "log_scope", "principal_injector", "provisioner", "register"]
+__all__ = [
+    "catalog_artifacts",
+    "clarify_artifacts",
+    "environments",
+    "layout_artifacts",
+    "log_scope",
+    "principal_injector",
+    "provisioner",
+    "register",
+]
 
 _log = logging.getLogger("hermes.plugin.tcc-mcp-config")
 
@@ -53,5 +74,19 @@ def register(ctx) -> None:
             "tcc-mcp-config: could not declare the MCP server — "
             "chat turns may find no tools until this is fixed"
         )
+
+    # AI Ask UI artifacts — process-wide; runtime gated to user-* profiles.
+    try:
+        catalog_artifacts.register(ctx)
+    except Exception:
+        _log.exception("tcc-mcp-config: catalog_artifacts register failed")
+    try:
+        clarify_artifacts.register(ctx)
+    except Exception:
+        _log.exception("tcc-mcp-config: clarify_artifacts register failed")
+    try:
+        layout_artifacts.register(ctx)
+    except Exception:
+        _log.exception("tcc-mcp-config: layout_artifacts register failed")
 
     _log.info("tcc-mcp-config ready (mcp server: %s)", environments.MCP_SERVER_NAME)
