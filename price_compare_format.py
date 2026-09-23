@@ -204,7 +204,7 @@ def _is_zone_essay(text: str) -> bool:
 
 
 def _short_intro(prose: str, *, title: str = "", tier_labels: list[str] | None = None) -> str:
-    """Keep a short non-table intro; never keep zone-essay / zone-price lines."""
+    """Keep a short non-table intro; never keep zone-essay / zone-price / insight lines."""
     labels = [str(x).strip() for x in (tier_labels or []) if str(x).strip()]
     kept: list[str] = []
     for raw in str(prose or "").splitlines():
@@ -212,6 +212,8 @@ def _short_intro(prose: str, *, title: str = "", tier_labels: list[str] | None =
         if not line or _is_structured_noise(line):
             continue
         if "จุดเด่น" in line or "จุดที่ต้องคิด" in line:
+            continue
+        if re.match(r"^(?:AI\s*Insight|💡|insight)\s*[:：]", line, flags=re.IGNORECASE):
             continue
         if labels and any(
             re.match(rf"^{re.escape(lab)}\b", line, flags=re.IGNORECASE) for lab in labels
@@ -430,6 +432,48 @@ def _extract_dash_zone_blurbs(
     return out
 
 
+def _extract_insight_blurbs(
+    text: str, tiers: list[dict]
+) -> dict[str, tuple[str, str]]:
+    """Lift ordered 'AI Insight:' / 💡 lines into tiers (model-written, not templates)."""
+    rows = usable_tiers(tiers)
+    if not rows:
+        return {}
+    insights: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = re.match(
+            r"^(?:AI\s*Insight|💡|insight)\s*[:：]\s*(.+)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            tip = _cell(match.group(1))
+            if tip and not _is_canned_cell(tip):
+                insights.append(tip[:100].rstrip("…") + ("…" if len(tip) > 100 else ""))
+    if len(insights) < 2:
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for index, tier in enumerate(rows):
+        label = _tier_label(tier)
+        if not label or index >= len(insights):
+            continue
+        pros = insights[index]
+        cons = ""
+        cheapest = float(rows[0]["price_min"])
+        delta = max(0, int(round(float(tier["price_min"]) - cheapest)))
+        if index == 0:
+            cons = "สิทธิ์หรือมุมมักน้อยกว่าโซนบน"
+        elif delta:
+            cons = f"จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ {_format_baht(delta)}"
+        else:
+            cons = "พิจารณางบก่อนตัดสินใจ"
+        out[label.casefold()] = (pros, cons)
+    return out
+
+
 def _merge_cell_blurbs(
     *sources: dict[str, tuple[str, str]],
 ) -> dict[str, tuple[str, str]]:
@@ -585,6 +629,7 @@ def compose_price_compare_reply(
     blurbs = _merge_cell_blurbs(
         _extract_marker_blurbs(reply, rows),
         _extract_dash_zone_blurbs(reply, rows),
+        _extract_insight_blurbs(reply, rows),
         _extract_zone_blurbs(reply, rows) if _is_zone_essay(reply) else {},
     )
     model_pros = sum(

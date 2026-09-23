@@ -402,3 +402,25 @@ def test_compose_skips_structural_fallback_before_retry():
         model, tiers, title="Orbit Indie Fest", allow_structural_fallback=True
     )
     assert has_price_compare_markers(final)
+
+
+def test_compose_lifts_ai_insight_lines_into_cells():
+    model = (
+        "เทียบ Orbit\n"
+        "AI Insight: เป็นตัวเริ่มต้นที่คุ้มสุดถ้าโฟกัสแค่ได้เข้างาน\n"
+        "AI Insight: ราคากลางที่น่าสนใจถ้าอยากบาลานซ์งบกับความคุ้ม\n"
+        "AI Insight: แพงสุด เหมาะคนที่อยากจัดเต็มสิทธิ์พรีเมียม\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(
+        model, tiers, title="Orbit Indie Fest", allow_structural_fallback=False
+    )
+    assert has_price_compare_markers(reply)
+    assert "เป็นตัวเริ่มต้นที่คุ้มสุด" in reply
+    assert "บาลานซ์งบกับความคุ้ม" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+    assert "AI Insight:" not in reply
