@@ -264,6 +264,61 @@ def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
     assert m.peek_stored_layout(key) == "compare_value"
 
 
+def test_price_compare_reply_uses_find_events_card_with_most_tiers():
+    m = load()
+    key = "price-compare-card"
+    m._ensure_armed = lambda: None
+    m._session_key_aliases = lambda: [key]
+    m.store_layout(key, "event_list")
+    m._mark_layout_called(key)
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {
+            key: {
+                "events": [
+                    {
+                        "title": "Other Festival",
+                        "layout": "poster",
+                        "ticket_tiers": [
+                            {"zone": "GA", "price_min": 500},
+                            {"zone": "VIP", "price_min": 1500},
+                        ],
+                    },
+                    {
+                        "title": "Sakon Festival",
+                        "venue": "สกลนคร",
+                        "layout": "card",
+                        "ticket_tiers": [
+                            {"zone": "Early Bird", "price_min": 888},
+                            {"zone": "Regular", "price_min": 1800},
+                            {"zone": "VIP", "price_min": 10000},
+                        ],
+                    },
+                ],
+                "expires": time.time() + 60,
+            }
+        },
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+
+    result = m.maybe_retry_layout(
+        object(),
+        {
+            "final_response": "Sakon Festival มีบัตรหลายราคาให้เลือกครับ",
+            "messages": [
+                {"role": "user", "content": "เทียบราคาบัตร Sakon Festival"},
+                {"role": "assistant", "content": "Sakon Festival มีบัตรหลายราคาให้เลือกครับ"},
+            ],
+        },
+        lambda **kwargs: None,
+    )
+
+    assert "⚖️" in result["final_response"]
+    assert result["final_response"].count("🎫") == 3
+    assert "Sakon Festival" in result["final_response"]
+    assert m.peek_stored_layout(key) == "compare_value"
+
+
 if __name__ == "__main__":
     test_normalize_accepts_similar_cards()
     test_store_take_attach()
@@ -276,4 +331,5 @@ if __name__ == "__main__":
     test_present_layout_rejects_prose_when_catalog_events()
     test_force_retry_when_prose_with_catalog_events()
     test_price_compare_reply_uses_get_event_tiers_and_compare_value()
+    test_price_compare_reply_uses_find_events_card_with_most_tiers()
     print("tcc-layout-artifacts ok")

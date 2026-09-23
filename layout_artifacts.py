@@ -596,16 +596,20 @@ def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> 
 
     keys = _layout_storage_keys(str(session_key or ""))
     events = _peek_catalog_event_rows(*keys)
-    event = next(
+    candidates = [
         (
-            row
-            for row in events
-            if isinstance(row, dict)
-            and row.get("layout") == "poster"
-            and len(_price_compare_format.usable_tiers(row.get("ticket_tiers") or [])) >= 2
-        ),
-        None,
-    )
+            len(_price_compare_format.usable_tiers(row.get("ticket_tiers") or [])),
+            row.get("layout") == "poster",
+            row,
+        )
+        for row in events
+        if isinstance(row, dict)
+    ]
+    event = max(
+        (candidate for candidate in candidates if candidate[0] >= 2),
+        key=lambda candidate: (candidate[0], candidate[1]),
+        default=(0, False, None),
+    )[2]
     if not event:
         return reply
 
