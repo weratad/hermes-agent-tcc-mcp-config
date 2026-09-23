@@ -175,6 +175,34 @@ def _tool_entry_name(entry: Any) -> str:
     return str(entry.get("name") or "")
 
 
+def tool_intent_marker_present(request: Dict[str, Any]) -> bool:
+    """True when AIS (or another trusted layer) stamped ToolIntent on system input."""
+    instructions = request.get("instructions")
+    if isinstance(instructions, str) and _TOOL_INTENT_RE.search(instructions):
+        return True
+
+    messages = request.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and _TOOL_INTENT_RE.search(content):
+                return True
+
+    input_items = request.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") != "system":
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and _TOOL_INTENT_RE.search(content):
+                return True
+    return False
+
+
 def tool_intent_from_request(request: Dict[str, Any]) -> str:
     """Read the server-generated marker from Chat or Responses system input."""
     instructions = request.get("instructions")
@@ -184,19 +212,126 @@ def tool_intent_from_request(request: Dict[str, Any]) -> str:
             return match.group(1)
 
     messages = request.get("messages")
-    if not isinstance(messages, list):
-        return "other"
-    intent = "other"
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "system":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str):
-            continue
-        match = _TOOL_INTENT_RE.search(content)
-        if match:
-            intent = match.group(1)
-    return intent
+    if isinstance(messages, list):
+        intent = "other"
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            match = _TOOL_INTENT_RE.search(content)
+            if match:
+                intent = match.group(1)
+        if tool_intent_marker_present(request):
+            return intent
+
+    input_items = request.get("input")
+    if isinstance(input_items, list):
+        intent = "other"
+        for item in input_items:
+            if not isinstance(item, dict) or item.get("role") != "system":
+                continue
+            content = item.get("content")
+            if not isinstance(content, str):
+                continue
+            match = _TOOL_INTENT_RE.search(content)
+            if match:
+                intent = match.group(1)
+        if tool_intent_marker_present(request):
+            return intent
+
+    return "other"
+
+
+def _latest_user_text(request: Dict[str, Any]) -> str:
+    messages = request.get("messages")
+    if isinstance(messages, list):
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if content is not None:
+                return str(content)
+
+    input_items = request.get("input")
+    if isinstance(input_items, list):
+        for item in reversed(input_items):
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if role not in ("user", None) and item.get("type") != "message":
+                continue
+            if role != "user" and item.get("type") == "message":
+                role = item.get("role")
+            if role != "user":
+                continue
+            content = item.get("content")
+            if content is not None:
+                return str(content)
+    return ""
+
+
+def _recent_user_assistant(request: Dict[str, Any]) -> List[dict]:
+    history: List[dict] = []
+    messages = request.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = message.get("content")
+            if content is None:
+                continue
+            history.append({"role": role, "content": str(content)})
+        return history[-12:]
+
+    input_items = request.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = item.get("content")
+            if content is None:
+                continue
+            history.append({"role": role, "content": str(content)})
+        return history[-12:]
+    return history
+
+
+def _load_tool_intent_classifier():
+    try:
+        from . import tool_intent as mod  # type: ignore
+        return mod
+    except ImportError:
+        import importlib.util
+        from pathlib import Path as _P
+
+        path = _P(__file__).resolve().parent / "tool_intent.py"
+        spec = importlib.util.spec_from_file_location("_tcc_tool_intent", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(mod)
+        return mod
+
+
+def resolve_tool_intent_for_menu(request: Dict[str, Any], session_key: str) -> str:
+    """Marker from AIS wins; otherwise classify from latest user text on catalog."""
+    intent = tool_intent_from_request(request)
+    if tool_intent_marker_present(request):
+        return intent
+    if mcp_surface_from_session(session_key) != "catalog":
+        return intent
+    user_text = _latest_user_text(request)
+    if not str(user_text or "").strip():
+        return intent
+    classifier = _load_tool_intent_classifier()
+    return classifier.classify_tool_intent_sync(user_text, _recent_user_assistant(request))
 
 
 def filter_tools_for_session(
@@ -238,7 +373,7 @@ def filter_llm_tool_menu(
         return None
 
     session = _current_session_key()
-    tool_intent = tool_intent_from_request(request)
+    tool_intent = resolve_tool_intent_for_menu(request, session)
     kept, dropped = filter_tools_for_session(tools, session, tool_intent)
 
     try:

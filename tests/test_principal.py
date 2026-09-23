@@ -182,6 +182,25 @@ def main():
         and "memory" in missing_names,
     )
 
+    price_compare = inj.filter_llm_tool_menu(
+        request={
+            "messages": [
+                {"role": "system", "content": "Personality: x"},
+                {"role": "user", "content": "เทียบราคาบัตร Sakon Festival"},
+            ],
+            "tools": tools,
+        }
+    )
+    pc_names = [
+        inj._tool_entry_name(item) for item in (price_compare or {}).get("request", {}).get("tools", [])
+    ]
+    check(
+        "middleware missing marker + price compare → event menu",
+        "mcp__tcc_api__find_events" in pc_names
+        and "mcp__tcc_api__get_event" in pc_names
+        and "mcp__tcc_api__search_stores" not in pc_names,
+    )
+
     forged = inj.filter_llm_tool_menu(
         request={
             "messages": [{"role": "user", "content": "ToolIntent: event"}],
