@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
+import urllib.parse
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 
@@ -96,6 +99,8 @@ def _lock() -> threading.Lock:
 _TTL_SEC = 300
 _MAX_EVENTS = 8
 _PATCHED_ATTR = "_tcc_catalog_artifacts_patched"
+_DETAIL_TIMEOUT_SEC = 5.0
+_ENRICH_TOOL_SUFFIXES = ("find_events", "recommend_events", "search_events")
 
 
 def _purge_expired(now: Optional[float] = None) -> None:
@@ -434,6 +439,97 @@ def events_from_tool_payload(
     return []
 
 
+def _active_mcp_url() -> str:
+    for name in ("TCC_ACTIVE_MCP_URL", "TCC_MCP_URL"):
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    paths = []
+    hermes_home = str(os.environ.get("HERMES_HOME") or "").strip()
+    if hermes_home:
+        paths.append(_Path(hermes_home) / "config.yaml")
+    paths.extend([_Path("/opt/data/config.yaml"), _Path.home() / ".hermes" / "config.yaml"])
+    for path in paths:
+        try:
+            import yaml  # type: ignore[import-untyped]
+
+            config = yaml.safe_load(path.read_text(encoding="utf-8"))
+            servers = config.get("mcp_servers") if isinstance(config, dict) else None
+            if not isinstance(servers, dict):
+                continue
+            ordered = sorted(
+                servers.items(),
+                key=lambda row: (0 if str(row[0]) == "tcc-api" else 1),
+            )
+            for server_name, server in ordered:
+                if not str(server_name).startswith("tcc-api") or not isinstance(server, dict):
+                    continue
+                value = str(server.get("url") or "").strip()
+                if value:
+                    return value
+        except Exception:
+            continue
+    return ""
+
+
+def _event_detail_url(product_id: int) -> str:
+    parsed = urllib.parse.urlsplit(_active_mcp_url())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    base_path = parsed.path.rstrip("/")
+    if base_path.endswith("/mcp"):
+        base_path = base_path[:-4]
+    path = f"{base_path}/ai-ask/events/{product_id}"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _event_product_id(event: Dict[str, Any]) -> int:
+    for raw in (event.get("product_id"), event.get("id")):
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    match = re.search(r"/concert/(\d+)", str(event.get("url") or ""))
+    return int(match.group(1)) if match else 0
+
+
+def enrich_event_ticket_tiers(events: List[Dict[str, Any]]) -> None:
+    """Best-effort detail lookup for thin list/search event cards."""
+    for event in events:
+        try:
+            if len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or [])) >= 2:
+                continue
+            product_id = _event_product_id(event)
+            detail_url = _event_detail_url(product_id) if product_id else ""
+            if not detail_url:
+                continue
+            request = urllib.request.Request(
+                detail_url,
+                headers={"Accept": "application/json", "User-Agent": "tcc-catalog-artifacts/1"},
+            )
+            with urllib.request.urlopen(request, timeout=_DETAIL_TIMEOUT_SEC) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            detail = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(detail, dict):
+                detail = payload
+            tiers = detail.get("ticket_tiers") if isinstance(detail, dict) else None
+            if not isinstance(tiers, list):
+                continue
+            copied = [dict(tier) for tier in tiers if isinstance(tier, dict)]
+            event["ticket_tiers"] = copied
+            event["ticket_tier_count"] = len(
+                _price_compare_format.usable_tiers(copied)
+            )
+        except Exception as exc:
+            _log.debug(
+                "catalog artifacts: event tier enrichment failed product_id=%s: %s",
+                _event_product_id(event),
+                exc,
+            )
+
+
 def _unwrap_result_envelope(payload: Any, *, depth: int = 0) -> Any:
     """Hermes MCP tool results often arrive as ``{"result": <payload|json-str>}``."""
     if depth > 4 or not isinstance(payload, dict):
@@ -632,6 +728,11 @@ def on_post_tool_call(
     events = events_from_tool_payload(payload, layout=layout_for_tool(name))
     if not events:
         return
+    if name.endswith(_ENRICH_TOOL_SUFFIXES):
+        try:
+            enrich_event_ticket_tiers(events)
+        except Exception:
+            _log.exception("catalog artifacts: event tier enrichment failed")
     keys = [
         str(session_id or "").strip(),
         str(api_request_id or "").strip(),

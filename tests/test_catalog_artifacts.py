@@ -3,8 +3,72 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
+
+
+def _load_plugin():
+    plugin_dir = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "tcc_mcp_catalog_artifacts_test", plugin_dir / "catalog_artifacts.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.is_ai_ask_user_profile = lambda: True
+    return mod
+
+
+def test_find_events_enriches_missing_ticket_tiers(monkeypatch) -> None:
+    mod = _load_plugin()
+    monkeypatch.setenv("TCC_ACTIVE_MCP_URL", "http://127.0.0.1:3333/mcp")
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self):
+            return json.dumps(
+                {
+                    "data": {
+                        "product_id": 5973,
+                        "title": "Sakon Festival 2026",
+                        "ticket_tiers": [
+                            {"zone": "Early Bird", "price_min": 888},
+                            {"zone": "Regular", "price_min": 1288},
+                        ],
+                    }
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        calls.append((request.full_url, timeout))
+        return Response()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    mod.on_post_tool_call(
+        tool_name="mcp__tcc_api__find_events",
+        result={
+            "items": [
+                {
+                    "product_id": 5973,
+                    "title": "Sakon Festival 2026",
+                    "ticket_tiers": [],
+                }
+            ]
+        },
+        session_id="enrich-bundled",
+    )
+
+    events = mod.take_events("enrich-bundled")
+    assert calls == [("http://127.0.0.1:3333/ai-ask/events/5973", 5.0)]
+    assert events[0]["ticket_tier_count"] == 2
+    assert len(events[0]["ticket_tiers"]) == 2
 
 
 def main() -> None:
