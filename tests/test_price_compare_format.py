@@ -141,6 +141,41 @@ def test_compose_keeps_model_markers_with_filled_cells():
     assert "ถูกสุด เข้างานได้" in reply
 
 
+
+def test_compose_lifts_model_dash_zone_prose_into_cells():
+    """Model zone lines (GA 550 บาท — …) must fill cells — not canned โซน+ราคา."""
+    model = (
+        "Orbit Indie Fest เทียบตามโซนแล้วคุ้มสุดคือ GA ครับ\n"
+        "\n"
+        "GA 550 บาท — ถูกสุด เหมาะถ้าอยากดูงานนี้แบบประหยัด\n"
+        "VIP 1,200 บาท — จ่ายเพิ่มเพื่อความสบายขึ้น เหมาะถ้าอยากได้ประสบการณ์ดีกว่า GA\n"
+        "VVIP 2,200 บาท — แพงสุด เหมาะถ้าเน้นพรีเมียมและพร้อมจ่ายเพิ่ม\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert has_price_compare_markers(reply)
+    assert "ถูกสุด เหมาะถ้าอยากดูงานนี้แบบประหยัด" in reply
+    assert "จ่ายเพิ่มเพื่อความสบายขึ้น" in reply
+    assert "แพงสุด เหมาะถ้าเน้นพรีเมียม" in reply
+    assert "โซน GA · ราคาเริ่มต้น" not in reply
+    assert "สมดุลราคากับประสบการณ์" not in reply
+    assert "สิทธิ์/มุมมองมักน้อยกว่าโซนบน" not in reply
+
+
+def test_needs_rewrite_when_cells_are_canned_zone_price():
+    canned = (
+        "เกริ่น\n"
+        "⚖️ เทียบ 2 ตัวเลือกที่น่าสนใจ\n"
+        "🎫 ฿550|โซน GA · ราคาเริ่มต้น|สิทธิ์/มุมมองมักน้อยกว่าโซนบน|คุ้มสุด\n"
+        "🎫 ฿1,200|โซน VIP · สมดุลราคากับประสบการณ์|จ่ายเพิ่มจากโซนถูกสุดประมาณ ฿650\n"
+    )
+    assert needs_price_compare_rewrite(canned) is True
+
+
 def test_compose_fills_blank_cons_cells():
     """Markers with จุดที่ต้องคิด = — must be rewritten with real copy."""
     model = (
@@ -165,8 +200,8 @@ def test_compose_fills_blank_cons_cells():
         cells = [c.strip() for c in line.replace("🎫", "", 1).strip().split("|")]
         assert len(cells) >= 3
         assert cells[2] not in ("", "—", "-")
-    assert "สิทธิ์/มุมมอง" in reply
-    assert "แพงกว่าโซนถูกสุด" in reply or "จ่ายเพิ่มจากโซนถูกสุด" in reply
+    assert "สิทธิ์/มุมมอง" in reply or "สิทธิ์หรือมุม" in reply
+    assert "แพงกว่า" in reply or "จ่ายเพิ่ม" in reply
     # Keep model intro above markers
     assert reply.splitlines()[0] == "เทียบราคาบัตร Night Market Live"
 
