@@ -6,7 +6,14 @@ import re
 from typing import Any
 
 COMPARE_ASK_RE = re.compile(
-    r"เทียบราคา|โซนไหนคุ้ม|compare\s+(?:ticket\s+)?prices?|ticket\s+prices?",
+    r"เทียบราคา|"
+    r"โซนไหนคุ้ม|"
+    r"(?:งบ|งบประมาณ).{0,48}โซนไหน|"
+    r"โซนไหน.{0,48}(?:งบ|งบประมาณ|คุ้ม)|"
+    r"ซื้อโซนไหน|"
+    r"ควรซื้อโซน|"
+    r"compare\s+(?:ticket\s+)?prices?|"
+    r"ticket\s+prices?",
     re.IGNORECASE,
 )
 NIGHTLIFE_RE = re.compile(

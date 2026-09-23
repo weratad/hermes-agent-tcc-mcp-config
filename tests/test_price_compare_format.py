@@ -29,6 +29,16 @@ def test_detect_th_and_en():
     assert not is_price_compare_ask("แชร์ให้เพื่อนดู")
 
 
+def test_detect_budget_zone_without_เทียบราคา():
+    """Budget-zone asks with a named show (plan Global Constraints)."""
+    assert is_price_compare_ask(
+        "ถ้างบประมาณ 3,000-4,000 ซื้อโซนไหนดี Orbit Indie Fest"
+    )
+    assert is_price_compare_ask("งบ 3000-4000 โซนไหนดี Night Market Live")
+    # Nightlife store compare still excluded even if budget-ish.
+    assert not is_price_compare_ask("เทียบราคาร้านในทองหล่อ")
+
+
 def test_usable_tiers_sorts_and_filters():
     raw = [
         {"zone": "VIP", "price_min": 10000},
