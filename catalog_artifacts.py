@@ -627,6 +627,21 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
             message = candidate
     user_text = peek_last_user_text(*key_list)
     compare_ask = _price_compare_format.is_price_compare_ask(user_text)
+    if not compare_ask:
+        # Session text peek can miss on guest turns; still wire-inject when
+        # layout was already stamped compare_* (ToolIntent / layout plugin).
+        hermes_pre = payload.get("hermes") if isinstance(payload, dict) else None
+        mode = None
+        if isinstance(hermes_pre, dict):
+            lay = hermes_pre.get("layout")
+            if isinstance(lay, dict):
+                mode = lay.get("mode")
+            elif isinstance(lay, str):
+                mode = lay
+        if mode in ("compare_value", "compare_zone", "compare_matrix"):
+            compare_ask = True
+            if not str(user_text or "").strip():
+                user_text = "เทียบราคา"
     if compare_ask:
         event = _price_compare_format.select_price_compare_event(events, user_text)
         n_tiers = (
@@ -647,9 +662,10 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
             n_tiers >= 2
             and event is not None
             and message is not None
-            and not _price_compare_format.has_price_compare_markers(reply)
+            and _price_compare_format.needs_price_compare_rewrite(reply)
         ):
-            message["content"] = _price_compare_format.format_price_compare_markers(
+            message["content"] = _price_compare_format.compose_price_compare_reply(
+                reply,
                 event["ticket_tiers"],
                 title=str(event.get("title") or ""),
                 venue=str(event.get("venue") or ""),

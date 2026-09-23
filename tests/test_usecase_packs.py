@@ -15,9 +15,21 @@ def load():
 
 def test_detail_pack():
     m = load()
-    pack = m.select_pack("event_detail", [{"title": "LOSO", "url": "/concert/1"}])
+    pack = m.select_pack(
+        "event_detail",
+        [{"title": "LOSO", "url": "/concert/1", "ticket_tier_count": 3}],
+    )
     assert pack is not None
     assert pack["choices"] == m.DETAIL_CHOICES
+
+
+def test_detail_pack_hides_compare_without_tiers():
+    m = load()
+    pack = m.select_pack(
+        "event_detail",
+        [{"title": "Fest", "url": "/concert/1", "ticket_tier_count": 0}],
+    )
+    assert pack["choices"] == ["ซื้อบัตร", "ส่งให้เพื่อน"]
 
 
 def test_similar_pack_is_home_shortcuts():
@@ -28,8 +40,20 @@ def test_similar_pack_is_home_shortcuts():
 
 def test_compare_zone_pack():
     m = load()
-    pack = m.select_pack("compare_zone", [{"title": "A", "url": "/concert/1", "price": "1000–4000"}])
+    # No price/tiers → canned follow-ups
+    pack = m.select_pack("compare_zone", [{"title": "A", "url": "/concert/1"}])
     assert "อยากได้โซนคุ้มสุด" in pack["choices"]
+
+
+def test_compare_zone_with_price_uses_dynamic_chips():
+    m = load()
+    pack = m.select_pack(
+        "compare_zone",
+        [{"title": "A", "url": "/concert/1", "price": "1000–4000"}],
+    )
+    assert "งบไม่เกินราคาเริ่มต้น" not in pack["choices"]
+    assert any("ซื้อบัตร" in c and "บาท" in c for c in pack["choices"])
+    assert pack["question"] == "สนใจโซนไหน?"
 
 
 def test_budget_pack_uses_prices():
@@ -41,6 +65,31 @@ def test_budget_pack_uses_prices():
     )
     assert any("ซื้อบัตร" in c and "บาท" in c for c in pack["choices"])
     assert any("ส่งให้เพื่อน" in c for c in pack["choices"])
+    assert "งบไม่เกินราคาเริ่มต้น" not in pack["choices"]
+
+
+def test_price_compare_ask_prefers_buy_price_chips():
+    m = load()
+    pack = m.select_pack(
+        "compare_value",
+        [
+            {
+                "title": "Orbit Indie Fest",
+                "url": "/concert/1",
+                "ticket_tiers": [
+                    {"zone": "GA", "price_min": 1490},
+                    {"zone": "VIP", "price_min": 4500},
+                ],
+            }
+        ],
+        user_text="เทียบราคาบัตร Orbit Indie Fest",
+    )
+    assert pack is not None
+    assert "งบไม่เกินราคาเริ่มต้น" not in pack["choices"]
+    assert "อยากได้โซนคุ้มสุด" not in pack["choices"]
+    assert any(c == "ซื้อบัตร 1490 บาท" for c in pack["choices"])
+    assert any(c == "ซื้อบัตร 4500 บาท" for c in pack["choices"])
+    assert pack["question"] == "สนใจโซนไหน?"
 
 
 def test_budget_pack_without_prices():
@@ -137,9 +186,12 @@ def test_last_user_text():
 
 if __name__ == "__main__":
     test_detail_pack()
+    test_detail_pack_hides_compare_without_tiers()
     test_similar_pack_is_home_shortcuts()
     test_compare_zone_pack()
+    test_compare_zone_with_price_uses_dynamic_chips()
     test_budget_pack_uses_prices()
+    test_price_compare_ask_prefers_buy_price_chips()
     test_budget_pack_without_prices()
     test_nightlife_mood_pack()
     test_venue_cards_booking_pack()

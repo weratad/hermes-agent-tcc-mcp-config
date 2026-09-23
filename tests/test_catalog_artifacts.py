@@ -123,7 +123,9 @@ def test_wire_inject_prefers_user_named_event() -> None:
         "choices": [{"message": {"content": "มีหลายราคา"}}],
     }
     mod.attach_catalog_to_payload(completion, key)
-    assert "Sakon Festival 2026" in completion["choices"][0]["message"]["content"]
+    content = completion["choices"][0]["message"]["content"]
+    assert content.startswith("มีหลายราคา\n⚖️")
+    assert content.count("🎫") == 2
 
 
 def test_wire_inject_skips_ambiguous_unrelated_events() -> None:

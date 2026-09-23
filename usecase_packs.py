@@ -24,6 +24,22 @@ DETAIL_CHOICES = [
     "ส่งให้เพื่อน",
 ]
 
+
+def detail_choices(events: Sequence[Any]) -> List[str]:
+    """Omit compare chips when catalog has fewer than 2 ticket tiers."""
+    concerts = concert_events(events)
+    can_compare = any(
+        int(e.get("ticket_tier_count") or 0) >= 2
+        or (
+            isinstance(e.get("ticket_tiers"), list)
+            and len([t for t in e["ticket_tiers"] if isinstance(t, dict)]) >= 2
+        )
+        for e in concerts
+    )
+    if can_compare:
+        return list(DETAIL_CHOICES)
+    return ["ซื้อบัตร", "ส่งให้เพื่อน"]
+
 MOOD_CHOICES = [
     "สนใจแนว Live Band + Dinner",
     "สนใจแนว Trendy Bar + New Spot",
@@ -41,6 +57,10 @@ NIGHTLIFE_OPEN_RE = re.compile(
 )
 COMPARE_STORE_RE = re.compile(r"เปรียบเทียบ|เทียบ.*(ร้าน|เพลง|บรรยากาศ)|compare", re.I)
 BUDGET_ZONE_RE = re.compile(r"งบ|โซนไหน|พัน|บาท", re.I)
+COMPARE_ASK_RE = re.compile(
+    r"เทียบราคา|โซนไหนคุ้ม|compare\s+(?:ticket\s+)?prices?|ticket\s+prices?",
+    re.IGNORECASE,
+)
 SEATMAP_RE = re.compile(r"ผัง|ที่นั่ง|seat\s*map|seating", re.I)
 SIMILAR_RE = re.compile(
     r"แนวเพลงเดียวกัน|คล้ายกัน|similar|งานราคาใกล้เคียง|กำลังมาแรง|ใกล้ฉัน",
@@ -96,6 +116,29 @@ def has_seatmap(events: Sequence[Any]) -> bool:
         if SEATMAP_RE.search(blob):
             return True
     return False
+
+
+def zone_labels(events: Sequence[Any], limit: int = 3) -> List[str]:
+    """Build 'เลือกโซน {zone}' chips from ticket_tiers when present."""
+    out: List[str] = []
+    for event in concert_events(events) or events or []:
+        if not isinstance(event, dict):
+            continue
+        tiers = event.get("ticket_tiers")
+        if not isinstance(tiers, list):
+            continue
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            zone = str(tier.get("zone") or tier.get("name") or "").strip()
+            if not zone:
+                continue
+            label = f"เลือกโซน {zone}"
+            if label not in out:
+                out.append(label)
+            if len(out) >= limit:
+                return out
+    return out
 
 
 def price_labels(events: Sequence[Any], limit: int = 4) -> List[str]:
@@ -183,17 +226,19 @@ def select_pack(
     ):
         return {
             "question": "สนใจต่อยังไงดี?",
-            "choices": list(DETAIL_CHOICES),
+            "choices": detail_choices(events),
         }
 
     if layout in ("compare_zone", "compare_value", "compare_matrix"):
-        if BUDGET_ZONE_RE.search(text):
-            choices = price_labels(concerts or events)[:3]
-            if not choices:
-                choices = ["ซื้อบัตร"]
+        # Prefer Figma-style "ซื้อบัตร {n} บาท" when tiers/prices exist; fall
+        # back to zone chips. Also fire when user_text peek failed (empty text
+        # used to fall through to the canned "งบไม่เกินราคาเริ่มต้น" pack).
+        dynamic = price_labels(concerts or events)[:3] or zone_labels(concerts or events)[:3]
+        if dynamic or BUDGET_ZONE_RE.search(text) or COMPARE_ASK_RE.search(text):
+            choices = list(dynamic) if dynamic else ["ซื้อบัตร"]
             choices.append("ส่งให้เพื่อนช่วยเลือก")
             return {
-                "question": "เลือกต่อยังไงดี?",
+                "question": "สนใจโซนไหน?",
                 "choices": choices[:_MAX_CHOICES],
             }
         choices = [

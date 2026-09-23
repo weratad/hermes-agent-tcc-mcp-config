@@ -112,6 +112,11 @@ RETRY_PROSE_WITH_CATALOG_MESSAGE = """You called present_layout with prose but t
 Call present_layout now with event_list (list/recommend) or event_detail (one show) — never prose when catalog events are shown.
 Do not rewrite the reply or event list."""
 
+RETRY_PRICE_COMPARE_MESSAGE = """This turn is a ticket/zone price compare for a named concert.
+Call find_events (q=event name) then get_event if needed, present_layout(compare_value), and emit ⚖️ / 🎫 rows from ticket_tiers (ราคา|จุดเด่น|จุดที่ต้องคิด).
+Do NOT ask “เทียบกับอะไร”, which compare type, or request more links — zone/ticket price compare is already implied.
+Do not invent tiers; use tool results."""
+
 PRESENT_LAYOUT_SCHEMA = {
     "type": "function",
     "function": {
@@ -119,7 +124,10 @@ PRESENT_LAYOUT_SCHEMA = {
         "description": (
             "Choose the UI layout for the current response. "
             "When catalog events were returned, use event_list or event_detail — never prose. "
-            "Comparisons must use compare_zone, compare_value, compare_matrix, or compare_store (table UI)."
+            "Comparisons must use compare_zone, compare_value, compare_matrix, or compare_store (table UI). "
+            "For compare_value (ticket/zone prices): call present_layout compare_value and emit "
+            "⚖️ then 🎫 price|จุดเด่น|จุดที่ต้องคิด lines (plugin finalizes markers from "
+            "ticket_tiers if missing)."
         ),
         "parameters": {
             "type": "object",
@@ -489,16 +497,45 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
         or has_events
         or _peek_clarify(*keys)
     )
-    if has_catalog:
+
+    # Price/zone compare with a named show: if model only clarified and never
+    # produced markers, force one tool+layout turn (Hermes owns the table).
+    try:
+        packs = _load_usecase_packs()
+        user_text = packs.last_user_text(
+            result.get("messages") if isinstance(result, dict) else None
+        )
+    except Exception:
+        user_text = ""
+    reply = ""
+    if isinstance(result, dict):
+        reply = result.get("final_response") if isinstance(result.get("final_response"), str) else ""
+        if not reply:
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                for row in reversed(messages):
+                    if isinstance(row, dict) and row.get("role") == "assistant":
+                        content = row.get("content")
+                        if isinstance(content, str):
+                            reply = content
+                            break
+    price_compare_miss = bool(
+        user_text
+        and _price_compare_format.is_price_compare_ask(user_text)
+        and _price_compare_format.needs_price_compare_rewrite(reply)
+    )
+
+    if has_catalog or price_compare_miss:
         stored = peek_stored_layout(*keys)
         prose_with_events = stored == "prose" and has_events
         missing = not _layout_called_this_turn(*keys)
-        if missing or prose_with_events:
-            retry_message = (
-                RETRY_PROSE_WITH_CATALOG_MESSAGE
-                if prose_with_events
-                else RETRY_USER_MESSAGE
-            )
+        if missing or prose_with_events or price_compare_miss:
+            if price_compare_miss and not has_catalog:
+                retry_message = RETRY_PRICE_COMPARE_MESSAGE
+            elif prose_with_events:
+                retry_message = RETRY_PROSE_WITH_CATALOG_MESSAGE
+            else:
+                retry_message = RETRY_USER_MESSAGE
             if prose_with_events:
                 _clear_layout_markers(*keys)
 
@@ -508,17 +545,18 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
             try:
                 if saved_delta is not None:
                     agent.stream_delta_callback = None
-                run_conversation(
+                result = run_conversation(
                     user_message=retry_message,
                     conversation_history=history,
                     stream_callback=None,
-                )
+                ) or result
             except Exception:
                 _log.exception("layout artifacts: retry failed")
             finally:
                 if saved_delta is not None:
                     agent.stream_delta_callback = saved_delta
                 _retry_guard.active = False
+            result = _ensure_price_compare_artifacts(result)
     return _ensure_usecase_artifacts(result)
 
 
@@ -607,9 +645,10 @@ def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> 
     _turn_state.layout_called = True
     _mark_layout_called(*keys)
 
-    if _price_compare_format.has_price_compare_markers(reply):
+    if not _price_compare_format.needs_price_compare_rewrite(reply):
         return reply
-    return _price_compare_format.format_price_compare_markers(
+    return _price_compare_format.compose_price_compare_reply(
+        reply,
         event["ticket_tiers"],
         title=str(event.get("title") or ""),
         venue=str(event.get("venue") or ""),

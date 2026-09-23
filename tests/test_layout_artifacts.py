@@ -387,10 +387,58 @@ def test_price_compare_reply_prefers_event_named_by_user():
         lambda **kwargs: None,
     )
 
+    assert result["final_response"].startswith(
+        "Sakon Festival มีบัตรหลายราคาให้เลือกครับ\n⚖️"
+    )
     assert "⚖️" in result["final_response"]
     assert result["final_response"].count("🎫") == 3
     assert "Sakon Festival" in result["final_response"]
     assert m.peek_stored_layout(key) == "compare_value"
+
+
+def test_price_compare_without_catalog_still_retries():
+    """Price-compare ask with no catalog/clarify must still force one retry."""
+    m = load()
+    key = "price-compare-no-catalog"
+    m._ensure_armed = lambda: None
+    m._session_key_aliases = lambda: [key]
+    m._turn_state.layout_called = False
+    # No catalog turn, no events, no clarify bag.
+    sys.modules["_tcc_clarify_artifacts_shared"] = {
+        "catalog_turns": {},
+        "bag": {},
+        "lock": threading.Lock(),
+    }
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {},
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+    calls = []
+
+    class Agent:
+        stream_delta_callback = object()
+
+    returned = m.maybe_retry_layout(
+        Agent(),
+        {
+            "final_response": "อยากเทียบกับงานไหน หรือโซนไหนเป็นพิเศษครับ?",
+            "messages": [
+                {"role": "user", "content": "เทียบราคา Night Market Live"},
+                {
+                    "role": "assistant",
+                    "content": "อยากเทียบกับงานไหน หรือโซนไหนเป็นพิเศษครับ?",
+                },
+            ],
+        },
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    assert returned is not None
+    assert len(calls) == 1
+    assert calls[0]["user_message"] == m.RETRY_PRICE_COMPARE_MESSAGE
+    assert "เทียบกับอะไร" in m.RETRY_PRICE_COMPARE_MESSAGE
+    assert "present_layout(compare_value)" in m.RETRY_PRICE_COMPARE_MESSAGE
 
 
 def test_price_compare_reply_skips_ambiguous_unrelated_events():
@@ -438,5 +486,6 @@ if __name__ == "__main__":
     test_force_retry_when_prose_with_catalog_events()
     test_price_compare_reply_uses_get_event_tiers_and_compare_value()
     test_price_compare_reply_prefers_event_named_by_user()
+    test_price_compare_without_catalog_still_retries()
     test_price_compare_reply_skips_ambiguous_unrelated_events()
     print("tcc-layout-artifacts ok")
