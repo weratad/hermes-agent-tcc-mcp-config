@@ -36,6 +36,23 @@ _ai_ask_profile = _load_ai_ask_profile()
 is_ai_ask_user_profile = _ai_ask_profile.is_ai_ask_user_profile
 
 
+def _load_price_compare_format():
+    try:
+        from . import price_compare_format as mod  # type: ignore
+        return mod
+    except ImportError:
+        pass
+    path = _Path(__file__).resolve().parent / "price_compare_format.py"
+    spec = _ilu.spec_from_file_location("_tcc_catalog_price_compare_format", path)
+    mod = _ilu.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_price_compare_format = _load_price_compare_format()
+
+
 
 _log = logging.getLogger("hermes.plugin.tcc-mcp-config.catalog-artifacts")
 
@@ -56,11 +73,15 @@ def _shared_state() -> Dict[str, Any]:
         {
             "bag": {},
             "last_events": {},
+            "last_user_text": {},
             "lock": threading.Lock(),
             "patched": False,
         },
     )
+    state.setdefault("bag", {})
     state.setdefault("last_events", {})
+    state.setdefault("last_user_text", {})
+    state.setdefault("lock", threading.Lock())
     return state  # type: ignore[return-value]
 
 
@@ -157,6 +178,36 @@ def peek_events(*keys: str) -> List[Dict[str, Any]]:
             if isinstance(events, list) and events:
                 return list(events)
         return []
+
+
+def store_last_user_text(keys: Any, text: str) -> None:
+    value = str(text or "").strip()
+    if not value:
+        return
+    raw_keys = [keys] if isinstance(keys, str) else list(keys or [])
+    expires = time.time() + _TTL_SEC
+    with _lock():
+        rows = _shared_state()["last_user_text"]
+        for raw in raw_keys:
+            key = str(raw or "").strip()
+            if key:
+                rows[key] = {"text": value, "expires": expires}
+
+
+def peek_last_user_text(*keys: str) -> str:
+    with _lock():
+        rows = _shared_state()["last_user_text"]
+        now = time.time()
+        for raw in keys:
+            key = str(raw or "").strip()
+            row = rows.get(key) if key else None
+            if not isinstance(row, dict):
+                continue
+            if float(row.get("expires") or 0) < now:
+                rows.pop(key, None)
+                continue
+            return str(row.get("text") or "")
+    return ""
 
 
 def _day_label(start_at: Any) -> str:
@@ -464,6 +515,63 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
                 payload.get("object"),
             )
         return payload
+    choices = payload.get("choices")
+    message = None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        candidate = choices[0].get("message")
+        if isinstance(candidate, dict) and isinstance(candidate.get("content"), str):
+            message = candidate
+    user_text = peek_last_user_text(*key_list)
+    attached_layout = None
+    existing_hermes = payload.get("hermes")
+    if isinstance(existing_hermes, dict):
+        layout = existing_hermes.get("layout")
+        if isinstance(layout, dict):
+            attached_layout = str(layout.get("mode") or "")
+    layout_state = __import__("sys").modules.get("_tcc_layout_artifacts_shared")
+    stored_layout = None
+    if isinstance(layout_state, dict):
+        layout_bag = layout_state.get("bag")
+        if isinstance(layout_bag, dict):
+            for key in key_list:
+                row = layout_bag.get(key)
+                if isinstance(row, dict) and row.get("layout"):
+                    stored_layout = str(row["layout"])
+                    break
+    compare_ask = (
+        _price_compare_format.is_price_compare_ask(user_text)
+        or (stored_layout or attached_layout) in {"compare_value", "compare_zone"}
+    )
+    if compare_ask and message is not None:
+        reply = str(message.get("content") or "")
+        candidates = [
+            (
+                len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or [])),
+                event,
+            )
+            for event in events
+            if isinstance(event, dict)
+        ]
+        n_tiers, event = max(candidates, key=lambda row: row[0], default=(0, None))
+        if (
+            n_tiers >= 2
+            and event is not None
+            and not _price_compare_format.has_price_compare_markers(reply)
+        ):
+            message["content"] = _price_compare_format.format_price_compare_markers(
+                event["ticket_tiers"],
+                title=str(event.get("title") or ""),
+                venue=str(event.get("venue") or ""),
+            )
+            hermes = payload.get("hermes")
+            if not isinstance(hermes, dict):
+                hermes = {}
+                payload["hermes"] = hermes
+            hermes["layout"] = {"mode": "compare_value"}
+            _log.warning(
+                "catalog artifacts: price compare markers wire-injected n_tiers=%s",
+                n_tiers,
+            )
     hermes = payload.get("hermes")
     if not isinstance(hermes, dict):
         hermes = {}
@@ -630,6 +738,10 @@ def _install_response_patch() -> bool:
 
 
 def register(ctx) -> None:
+    state = _shared_state()
+    state["peek_events"] = peek_events
+    state["store_last_user_text"] = store_last_user_text
+    state["peek_last_user_text"] = peek_last_user_text
     ctx.register_hook("post_tool_call", on_post_tool_call)
     try:
         _install_response_patch()

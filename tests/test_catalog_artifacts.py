@@ -149,6 +149,29 @@ def main() -> None:
     assert posters[0]["layout"] == "poster"
     assert posters[0]["ticket_tier_count"] == 2
 
+    compare_events = [
+        {
+            "title": "Sakon Festival 2026",
+            "venue": "Sakon Hall",
+            "layout": "poster",
+            "ticket_tiers": [
+                {"zone": "Early Bird", "price_min": 888},
+                {"zone": "Regular", "price_min": 1288},
+            ],
+        }
+    ]
+    mod.store_last_user_text(["compare-session"], "เทียบราคาบัตร Sakon Festival")
+    mod.store_events("compare-session", compare_events)
+    completion = {
+        "object": "chat.completion",
+        "choices": [{"message": {"content": "มีบัตร 2 ราคา"}}],
+    }
+    mod.attach_catalog_to_payload(completion, "compare-session")
+    content = completion["choices"][0]["message"]["content"]
+    assert "⚖️" in content
+    assert content.count("🎫") == 2
+    assert completion["hermes"]["layout"] == {"mode": "compare_value"}
+
     print("tcc-catalog-artifacts ok")
 
 

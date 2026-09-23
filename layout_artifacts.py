@@ -750,6 +750,21 @@ def _ensure_usecase_artifacts(result: Any) -> Any:
     return result
 
 
+def _stash_last_user_text(text: Any) -> None:
+    value = str(text or "").strip()
+    keys = _session_key_aliases()
+    if not value or not keys:
+        return
+    import sys
+
+    state = sys.modules.get("_tcc_catalog_artifacts_shared")
+    if not isinstance(state, dict):
+        return
+    store = state.get("store_last_user_text")
+    if callable(store):
+        store(keys, value)
+
+
 def wrap_agent_run_conversation(agent: Any) -> None:
     original = getattr(agent, "run_conversation", None)
     if not callable(original) or getattr(original, _MCP_RETRY_WRAPPED_ATTR, False):
@@ -758,6 +773,8 @@ def wrap_agent_run_conversation(agent: Any) -> None:
     @wraps(original)
     def run_conversation(*args, **kwargs):
         _turn_state.layout_called = False
+        user_message = kwargs.get("user_message") or (args[0] if args else "")
+        _stash_last_user_text(user_message)
         result = original(*args, **kwargs)
         return maybe_retry_layout(agent, result, original)
 
