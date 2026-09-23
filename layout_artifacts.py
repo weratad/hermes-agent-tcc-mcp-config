@@ -53,6 +53,8 @@ _TTL_SEC = 300
 _PATCHED_ATTR = "_tcc_layout_artifacts_patched"
 _AGENT_PATCHED_ATTR = "_tcc_layout_agent_patched"
 _RETRY_WRAPPED_ATTR = "_tcc_layout_retry_wrapped"
+_MCP_AGENT_PATCHED_ATTR = "_tcc_mcp_layout_agent_patched"
+_MCP_RETRY_WRAPPED_ATTR = "_tcc_mcp_layout_retry_wrapped"
 _retry_guard = threading.local()
 _turn_state = threading.local()
 
@@ -653,6 +655,10 @@ def _ensure_price_compare_artifacts(result: Any) -> Any:
     if ensured == reply:
         return result
 
+    _log.info(
+        "layout artifacts: price compare markers injected session=%s",
+        keys[0],
+    )
     result["final_response"] = ensured
     if isinstance(messages, list):
         for row in reversed(messages):
@@ -746,7 +752,7 @@ def _ensure_usecase_artifacts(result: Any) -> Any:
 
 def wrap_agent_run_conversation(agent: Any) -> None:
     original = getattr(agent, "run_conversation", None)
-    if not callable(original) or getattr(original, _RETRY_WRAPPED_ATTR, False):
+    if not callable(original) or getattr(original, _MCP_RETRY_WRAPPED_ATTR, False):
         return
 
     @wraps(original)
@@ -755,7 +761,7 @@ def wrap_agent_run_conversation(agent: Any) -> None:
         result = original(*args, **kwargs)
         return maybe_retry_layout(agent, result, original)
 
-    setattr(run_conversation, _RETRY_WRAPPED_ATTR, True)
+    setattr(run_conversation, _MCP_RETRY_WRAPPED_ATTR, True)
     agent.run_conversation = run_conversation
 
 
@@ -787,7 +793,7 @@ def _install_agent_patch(api_mod: Any) -> bool:
         original_create_agent = getattr(candidate, "__dict__", {}).get("_create_agent")
         if not callable(original_create_agent):
             continue
-        if getattr(original_create_agent, _AGENT_PATCHED_ATTR, False):
+        if getattr(original_create_agent, _MCP_AGENT_PATCHED_ATTR, False):
             armed = True
             continue
 
@@ -798,7 +804,7 @@ def _install_agent_patch(api_mod: Any) -> bool:
                 wrap_agent_run_conversation(agent)
                 return agent
 
-            setattr(_create_agent, _AGENT_PATCHED_ATTR, True)
+            setattr(_create_agent, _MCP_AGENT_PATCHED_ATTR, True)
             return _create_agent
 
         setattr(candidate, "_create_agent", make_create_agent(original_create_agent))

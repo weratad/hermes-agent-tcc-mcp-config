@@ -218,6 +218,59 @@ def test_force_retry_when_prose_with_catalog_events():
     assert m.peek_stored_layout(key) is None
 
 
+def test_mcp_wrapper_nests_over_standalone_shared_retry_wrapper():
+    m = load()
+    calls = []
+
+    class Agent:
+        pass
+
+    def standalone_wrapper(*args, **kwargs):
+        return {"messages": []}
+
+    setattr(standalone_wrapper, "_tcc_layout_retry_wrapped", True)
+    agent = Agent()
+    agent.run_conversation = standalone_wrapper
+    m.maybe_retry_layout = (
+        lambda wrapped_agent, result, original: calls.append(
+            (wrapped_agent, result, original)
+        )
+        or result
+    )
+
+    m.wrap_agent_run_conversation(agent)
+    result = agent.run_conversation(user_message="compare")
+
+    assert result == {"messages": []}
+    assert len(calls) == 1
+    assert calls[0][0] is agent
+    assert calls[0][2] is standalone_wrapper
+    assert getattr(agent.run_conversation, "_tcc_mcp_layout_retry_wrapped", False)
+
+
+def test_mcp_agent_patch_nests_over_standalone_shared_agent_patch():
+    m = load()
+
+    class Agent:
+        def run_conversation(self, *args, **kwargs):
+            return {"messages": []}
+
+    class ApiHandler:
+        def _create_agent(self):
+            return Agent()
+
+    setattr(ApiHandler._create_agent, "_tcc_layout_agent_patched", True)
+
+    class ApiModule:
+        Handler = ApiHandler
+
+    assert m._install_agent_patch(ApiModule)
+    created = ApiHandler()._create_agent()
+
+    assert getattr(ApiHandler._create_agent, "_tcc_mcp_layout_agent_patched", False)
+    assert getattr(created.run_conversation, "_tcc_mcp_layout_retry_wrapped", False)
+
+
 def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
     m = load()
     key = "price-compare"
