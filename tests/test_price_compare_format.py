@@ -383,3 +383,22 @@ def test_select_event_bare_ask_does_not_auto_pick_single_eligible():
     ]
     assert select_price_compare_event(events, "เทียบราคาบัตร") is None
     assert select_price_compare_event(events, "เทียบราคาบัตร Orbit Indie Fest") is events[0]
+
+
+def test_compose_skips_structural_fallback_before_retry():
+    """Pre-retry: do not invent 🎫 templates when model wrote no zone advice."""
+    model = "Orbit Indie Fest มี 3 ราคาเทียบกันได้แบบนี้\nถ้าเน้นคุ้ม แนะนำ VIP"
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    early = compose_price_compare_reply(
+        model, tiers, title="Orbit Indie Fest", allow_structural_fallback=False
+    )
+    assert "🎫" not in early
+    assert "แนะนำ VIP" in early
+    final = compose_price_compare_reply(
+        model, tiers, title="Orbit Indie Fest", allow_structural_fallback=True
+    )
+    assert has_price_compare_markers(final)

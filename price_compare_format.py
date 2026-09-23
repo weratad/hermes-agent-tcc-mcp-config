@@ -280,9 +280,10 @@ def _is_blank_cell(text: str) -> bool:
 
 _CANNED_CELL_RE = re.compile(
     r"โซน\s+\S+\s*·\s*(?:ราคาเริ่มต้น|สมดุลราคากับประสบการณ์|ระดับบนสุด)"
-    r"|สิทธิ์/มุมมองมักน้อยกว่าโซนบน"
-    r"|จ่ายเพิ่มจากโซนถูกสุดประมาณ"
-    r"|แพงกว่าโซนถูกสุดประมาณ",
+    r"|ตัวเลือกถูกสุดในงานนี้|ตัวเลือกกลาง|ตัวเลือกบนสุดในงานนี้"
+    r"|สิทธิ์/มุมมองมักน้อยกว่าโซนบน|สิทธิ์หรือมุมมักน้อยกว่าโซนบน"
+    r"|จ่ายเพิ่มจากโซนถูกสุดประมาณ|จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ"
+    r"|แพงกว่าโซนถูกสุดประมาณ|แพงกว่าตัวเลือกถูกสุดประมาณ",
 )
 
 
@@ -559,12 +560,14 @@ def compose_price_compare_reply(
     *,
     title: str = "",
     venue: str = "",
+    allow_structural_fallback: bool = True,
 ) -> str:
     """Hermes finalize: keep model voice + ensure filled ⚖️/🎫 markers for web.
 
     - Model markers with real จุดเด่น/จุดที่ต้องคิด → keep (only when ≥2 tiers)
     - Zone-essay / dash prose (GA 550 บาท — …) → lift into cells
-    - Missing markers or blank/—/canned cells → rebuild from model blurbs
+    - Missing markers: lift model blurbs into table; structural fallback only when
+      ``allow_structural_fallback`` (after a model retry) — never invent zone+price copy first
     - <2 usable tiers → honest no-table (never keep invented ⚖️/🎫)
     """
     reply = str(model_reply or "")
@@ -584,9 +587,18 @@ def compose_price_compare_reply(
         _extract_dash_zone_blurbs(reply, rows),
         _extract_zone_blurbs(reply, rows) if _is_zone_essay(reply) else {},
     )
+    model_pros = sum(
+        1
+        for _, (pros, _) in blurbs.items()
+        if pros and not _is_blank_cell(pros) and not _is_canned_cell(pros)
+    )
+    if model_pros < 2 and not allow_structural_fallback:
+        # Let layout retry ask the model for real 🎫 cells — do not stuff templates yet.
+        cleaned = _model_prose(reply)
+        return cleaned or _short_intro("", title=title)
+
     table = _marker_table(rows, blurbs=blurbs)
     labels = [_tier_label(t) for t in rows if _tier_label(t)]
-    # Zone/dash essays already live in cells — keep a short intro only (avoid ซ้ำ).
     if _is_zone_essay(reply) or _looks_like_zone_price_lines(reply, rows) or len(blurbs) >= 2:
         voice = _short_intro(_model_prose(reply), title=title, tier_labels=labels)
     else:

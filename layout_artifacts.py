@@ -487,7 +487,8 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
     _ensure_armed()
     if not is_ai_ask_user_profile():
         return result
-    result = _ensure_price_compare_artifacts(result)
+    # Pre-retry: lift model copy only — do not invent zone+price cell templates yet.
+    result = _ensure_price_compare_artifacts(result, allow_structural_fallback=False)
     if getattr(_retry_guard, "active", False):
         result = _ensure_usecase_artifacts(result)
         return result
@@ -557,7 +558,10 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
                 if saved_delta is not None:
                     agent.stream_delta_callback = saved_delta
                 _retry_guard.active = False
-            result = _ensure_price_compare_artifacts(result)
+            # After retry: allow structural fallback so the table is never blank.
+            result = _ensure_price_compare_artifacts(
+                result, allow_structural_fallback=True
+            )
     return _ensure_usecase_artifacts(result)
 
 
@@ -630,10 +634,18 @@ def _peek_catalog_event_rows(*keys: str) -> list:
     return _read()
 
 
-def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> str:
+def ensure_price_compare_reply(
+    session_key: str,
+    user_text: str,
+    reply: str,
+    *,
+    allow_structural_fallback: bool = True,
+) -> str:
     """Force deterministic compare markers when get_event returned usable tiers.
 
     Bare / thin-tier asks must not keep invented ⚖️/🎫 — rewrite to honest prose.
+    When ``allow_structural_fallback`` is False (pre-retry), only lift model copy —
+    do not invent zone+price cell templates.
     """
     if not _price_compare_format.is_price_compare_ask(user_text):
         return reply
@@ -654,6 +666,7 @@ def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> 
             event["ticket_tiers"],
             title=str(event.get("title") or ""),
             venue=str(event.get("venue") or ""),
+            allow_structural_fallback=allow_structural_fallback,
         )
 
     # No ≥2-tier named event: strip fake table markers (P5 bare / P6 thin).
@@ -671,10 +684,13 @@ def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> 
         tiers if isinstance(tiers, list) else [],
         title=str((matched or {}).get("title") or ""),
         venue=str((matched or {}).get("venue") or ""),
+        allow_structural_fallback=allow_structural_fallback,
     )
 
 
-def _ensure_price_compare_artifacts(result: Any) -> Any:
+def _ensure_price_compare_artifacts(
+    result: Any, *, allow_structural_fallback: bool = True
+) -> Any:
     if not isinstance(result, dict):
         return result
     messages = result.get("messages")
@@ -696,13 +712,19 @@ def _ensure_price_compare_artifacts(result: Any) -> Any:
                     if isinstance(content, str):
                         reply = content
                         break
-    ensured = ensure_price_compare_reply(keys[0], user_text, reply)
+    ensured = ensure_price_compare_reply(
+        keys[0],
+        user_text,
+        reply,
+        allow_structural_fallback=allow_structural_fallback,
+    )
     if ensured == reply:
         return result
 
     _log.info(
-        "layout artifacts: price compare markers injected session=%s",
+        "layout artifacts: price compare markers injected session=%s fallback=%s",
         keys[0],
+        allow_structural_fallback,
     )
     result["final_response"] = ensured
     if isinstance(messages, list):
