@@ -84,14 +84,24 @@ RETRY_USER_MESSAGE = """You did not call present_layout for this turn.
 Call present_layout now with exactly one layout from:
 similar_cards, event_list, event_detail, venue_cards, artist_cards,
 compare_zone, compare_value, compare_matrix, compare_store, prose, refuse.
-Off-topic refuse → refuse. Catalog list → event_list or similar_cards.
+Off-topic refuse → refuse. Catalog list/recommend → event_list (not prose).
+Single-event detail → event_detail. Similar → similar_cards.
+Any comparison → compare_zone / compare_value / compare_matrix / compare_store (table), never prose.
+Do not rewrite the reply or event list."""
+
+RETRY_PROSE_WITH_CATALOG_MESSAGE = """You called present_layout with prose but this turn has catalog events.
+Call present_layout now with event_list (list/recommend) or event_detail (one show) — never prose when catalog events are shown.
 Do not rewrite the reply or event list."""
 
 PRESENT_LAYOUT_SCHEMA = {
     "type": "function",
     "function": {
         "name": "present_layout",
-        "description": "Choose the UI layout for the current response.",
+        "description": (
+            "Choose the UI layout for the current response. "
+            "When catalog events were returned, use event_list or event_detail — never prose. "
+            "Comparisons must use compare_zone, compare_value, compare_matrix, or compare_store (table UI)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -203,6 +213,31 @@ def peek_layout(*keys: str) -> bool:
         )
 
 
+def peek_stored_layout(*keys: str) -> Optional[str]:
+    with _lock():
+        _purge_expired()
+        for raw in keys:
+            key = str(raw or "").strip()
+            row = _bag().get(key)
+            if not key or not row:
+                continue
+            mode = normalize_layout(row.get("layout"))
+            if mode:
+                return mode
+        return None
+
+
+def _clear_layout_markers(*keys: str) -> None:
+    called = _shared_state()["layout_called"]
+    with _lock():
+        for raw in keys:
+            key = str(raw or "").strip()
+            if key:
+                called.pop(key, None)
+                _bag().pop(key, None)
+    _turn_state.layout_called = False
+
+
 def take_layout(*keys: str) -> Optional[str]:
     with _lock():
         _purge_expired()
@@ -295,6 +330,11 @@ def present_layout(layout: Any = None, **kwargs: Any) -> str:
         str(kwargs.get("api_request_id") or ""),
         str(kwargs.get("task_id") or ""),
     )
+    if mode == "prose" and _peek_catalog_events(*keys):
+        return (
+            "Invalid layout: catalog events are present this turn. "
+            "Call present_layout with event_list or event_detail, not prose."
+        )
     for key in keys:
         store_layout(key, mode)
     _turn_state.layout_called = True
@@ -325,7 +365,10 @@ def on_post_tool_call(
     mode = normalize_layout(args)
     if not mode:
         return
-    for key in _layout_storage_keys(session_id, api_request_id, task_id):
+    keys = _layout_storage_keys(session_id, api_request_id, task_id)
+    if mode == "prose" and _peek_catalog_events(*keys):
+        return
+    for key in keys:
         store_layout(key, mode)
     _turn_state.layout_called = True
     _mark_layout_called(session_id, api_request_id, task_id, *_session_key_aliases())
@@ -419,14 +462,26 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
     if getattr(_retry_guard, "active", False):
         return result
     keys = _session_key_aliases()
-    if _layout_called_this_turn(*keys):
-        return result
-    if not (
+    has_events = _peek_catalog_events(*keys)
+    has_catalog = (
         _peek_catalog_turn(*keys)
-        or _peek_catalog_events(*keys)
+        or has_events
         or _peek_clarify(*keys)
-    ):
+    )
+    if not has_catalog:
         return result
+
+    stored = peek_stored_layout(*keys)
+    prose_with_events = stored == "prose" and has_events
+    missing = not _layout_called_this_turn(*keys)
+    if not missing and not prose_with_events:
+        return result
+
+    retry_message = (
+        RETRY_PROSE_WITH_CATALOG_MESSAGE if prose_with_events else RETRY_USER_MESSAGE
+    )
+    if prose_with_events:
+        _clear_layout_markers(*keys)
 
     history = result.get("messages") if isinstance(result, dict) else None
     saved_delta = getattr(agent, "stream_delta_callback", None)
@@ -435,7 +490,7 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
         if saved_delta is not None:
             agent.stream_delta_callback = None
         run_conversation(
-            user_message=RETRY_USER_MESSAGE,
+            user_message=retry_message,
             conversation_history=history,
             stream_callback=None,
         )

@@ -2,6 +2,14 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.5.2] — 2026-09-23
+
+### Fixed
+- Reject `present_layout(prose)` when catalog events exist this turn (require `event_list` / `event_detail`)
+- Force one layout retry when the model recorded prose despite catalog events
+
+[2.5.2]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.5.2
+
 ## [2.5.1] — 2026-09-23
 
 ### Fixed

@@ -170,6 +170,54 @@ def test_retry_suppressed_when_layout_called_this_turn():
     assert calls == []
 
 
+def test_present_layout_rejects_prose_when_catalog_events():
+    m = load()
+    key = "prose-reject"
+    m._session_key_aliases = lambda: [key]
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {key: {"events": [{"title": "A", "url": "/concert/1"}], "expires": time.time() + 60}},
+        "lock": threading.Lock(),
+    }
+    msg = m.present_layout(layout="prose", session_id=key)
+    assert "event_list" in msg
+    assert m.peek_stored_layout(key) is None
+    assert m.take_layout(key) is None
+
+
+def test_force_retry_when_prose_with_catalog_events():
+    m = load()
+    key = "prose-retry"
+    m._ensure_armed = lambda: None
+    m._session_key_aliases = lambda: [key]
+    m._turn_state.layout_called = True
+    m.store_layout(key, "prose")
+    m._mark_layout_called(key)
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {key: {"events": [{"title": "A"}], "expires": time.time() + 60}},
+        "lock": threading.Lock(),
+    }
+    sys.modules["_tcc_clarify_artifacts_shared"] = {
+        "catalog_turns": {key: time.time()},
+        "bag": {},
+        "lock": threading.Lock(),
+    }
+    calls = []
+
+    class Agent:
+        stream_delta_callback = object()
+
+    returned = m.maybe_retry_layout(
+        Agent(),
+        {"messages": [{"role": "assistant", "content": "list"}]},
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    assert returned == {"messages": [{"role": "assistant", "content": "list"}]}
+    assert len(calls) == 1
+    assert calls[0]["user_message"] == m.RETRY_PROSE_WITH_CATALOG_MESSAGE
+    assert m.peek_stored_layout(key) is None
+
+
 if __name__ == "__main__":
     test_normalize_accepts_similar_cards()
     test_store_take_attach()
@@ -179,4 +227,6 @@ if __name__ == "__main__":
     test_force_retry_runs_for_catalog_turn_despite_stale_layout()
     test_force_retry_runs_when_clarify_without_layout()
     test_retry_suppressed_when_layout_called_this_turn()
+    test_present_layout_rejects_prose_when_catalog_events()
+    test_force_retry_when_prose_with_catalog_events()
     print("tcc-layout-artifacts ok")
