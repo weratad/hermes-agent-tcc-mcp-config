@@ -271,6 +271,25 @@ def test_mcp_agent_patch_nests_over_standalone_shared_agent_patch():
     assert getattr(created.run_conversation, "_tcc_mcp_layout_retry_wrapped", False)
 
 
+def test_mcp_agent_patch_readiness_waits_for_adapter_class():
+    m = load()
+
+    class EmptyApiModule:
+        pass
+
+    assert not m._install_agent_patch_ok(EmptyApiModule)
+
+    class ApiHandler:
+        def _create_agent(self):
+            return object()
+
+    class ReadyApiModule:
+        Handler = ApiHandler
+
+    assert m._install_agent_patch(ReadyApiModule)
+    assert m._install_agent_patch_ok(ReadyApiModule)
+
+
 def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
     m = load()
     key = "price-compare"

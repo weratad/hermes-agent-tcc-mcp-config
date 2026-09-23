@@ -864,9 +864,26 @@ def _install_response_patch() -> bool:
 
 def _ensure_armed(*_args, **_kwargs) -> None:
     try:
+        if _shared_state().get("armed") and _install_agent_patch_ok():
+            return
         _install_response_patch()
     except Exception:
         _log.debug("layout artifacts: ensure_armed failed", exc_info=True)
+
+
+def _install_agent_patch_ok(api_mod: Any = None) -> bool:
+    if api_mod is None:
+        try:
+            from gateway.platforms import api_server as api_mod
+        except Exception:
+            return False
+    for candidate in vars(api_mod).values():
+        if not isinstance(candidate, type):
+            continue
+        fn = getattr(candidate, "__dict__", {}).get("_create_agent")
+        if callable(fn) and getattr(fn, _MCP_AGENT_PATCHED_ATTR, False):
+            return True
+    return False
 
 
 def register(ctx) -> None:
@@ -885,7 +902,7 @@ def register(ctx) -> None:
 
     def _arm_loop() -> None:
         for _ in range(90):
-            if _install_response_patch():
+            if _install_response_patch() and _install_agent_patch_ok():
                 return
             time.sleep(2)
         _log.error("tcc-layout-artifacts failed to arm within timeout")
