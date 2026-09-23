@@ -13,6 +13,7 @@ from price_compare_format import (  # noqa: E402
     format_price_compare_markers,
     has_price_compare_markers,
     is_price_compare_ask,
+    select_price_compare_event,
     usable_tiers,
 )
 
@@ -21,6 +22,8 @@ def test_detect_th_and_en():
     assert is_price_compare_ask("เทียบราคาบัตร Sakon Festival")
     assert is_price_compare_ask("โซนไหนคุ้มสุด")
     assert is_price_compare_ask("Compare Sakon Festival 2026 ticket prices")
+    assert not is_price_compare_ask("เทียบราคาร้าน A กับร้าน B")
+    assert not is_price_compare_ask("เทียบราคาร้านในทองหล่อ")
     assert not is_price_compare_ask("แชร์ให้เพื่อนดู")
 
 
@@ -69,3 +72,21 @@ def test_has_price_compare_markers_requires_structure():
         venue="V",
     )
     assert has_price_compare_markers(good)
+
+
+def test_select_event_prefers_product_id_then_title():
+    events = [
+        {
+            "title": "Other Festival",
+            "product_id": 111,
+            "ticket_tiers": [{"price_min": 100}, {"price_min": 200}],
+        },
+        {
+            "title": "Sakon Festival",
+            "product_id": 5973,
+            "ticket_tiers": [{"price_min": 888}, {"price_min": 1288}],
+        },
+    ]
+    assert select_price_compare_event(events, "เทียบ /concert/5973") is events[1]
+    assert select_price_compare_event(events, "เทียบราคาบัตร Sakon") is events[1]
+    assert select_price_compare_event(events, "เทียบราคาบัตรงานนี้") is None

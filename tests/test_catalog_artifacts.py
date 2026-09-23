@@ -20,7 +20,7 @@ def _load_plugin():
     return mod
 
 
-def test_find_events_enriches_missing_ticket_tiers(monkeypatch) -> None:
+def test_find_events_enriches_only_matching_event_for_price_compare(monkeypatch) -> None:
     mod = _load_plugin()
     monkeypatch.setenv("TCC_ACTIVE_MCP_URL", "http://127.0.0.1:3333/mcp")
     calls = []
@@ -51,10 +51,16 @@ def test_find_events_enriches_missing_ticket_tiers(monkeypatch) -> None:
         return Response()
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    mod.store_last_user_text(["enrich-bundled"], "เทียบราคาบัตร Sakon Festival")
     mod.on_post_tool_call(
         tool_name="mcp__tcc_api__find_events",
         result={
             "items": [
+                {
+                    "product_id": 9999,
+                    "title": "Unrelated Festival",
+                    "ticket_tiers": [],
+                },
                 {
                     "product_id": 5973,
                     "title": "Sakon Festival 2026",
@@ -67,8 +73,82 @@ def test_find_events_enriches_missing_ticket_tiers(monkeypatch) -> None:
 
     events = mod.take_events("enrich-bundled")
     assert calls == [("http://127.0.0.1:3333/ai-ask/events/5973", 5.0)]
-    assert events[0]["ticket_tier_count"] == 2
-    assert len(events[0]["ticket_tiers"]) == 2
+    assert events[1]["ticket_tier_count"] == 2
+    assert len(events[1]["ticket_tiers"]) == 2
+
+
+def test_find_events_skips_enrichment_for_nightlife_compare(monkeypatch) -> None:
+    mod = _load_plugin()
+    calls = []
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    mod.store_last_user_text(["nightlife-bundled"], "เทียบราคาร้านในทองหล่อ")
+    mod.on_post_tool_call(
+        tool_name="mcp__tcc_api__find_events",
+        result={"items": [{"product_id": 5973, "title": "Sakon Festival 2026"}]},
+        session_id="nightlife-bundled",
+    )
+    assert calls == []
+
+
+def test_wire_inject_prefers_user_named_event() -> None:
+    mod = _load_plugin()
+    key = "wire-match-bundled"
+    mod.store_last_user_text([key], "เทียบราคาบัตร Sakon Festival")
+    mod.store_events(
+        key,
+        [
+            {
+                "title": "Other Festival",
+                "ticket_tiers": [
+                    {"zone": "A", "price_min": 100},
+                    {"zone": "B", "price_min": 200},
+                    {"zone": "C", "price_min": 300},
+                ],
+            },
+            {
+                "title": "Sakon Festival 2026",
+                "ticket_tiers": [
+                    {"zone": "Early Bird", "price_min": 888},
+                    {"zone": "Regular", "price_min": 1288},
+                ],
+            },
+        ],
+    )
+    completion = {
+        "object": "chat.completion",
+        "choices": [{"message": {"content": "มีหลายราคา"}}],
+    }
+    mod.attach_catalog_to_payload(completion, key)
+    assert "Sakon Festival 2026" in completion["choices"][0]["message"]["content"]
+
+
+def test_wire_inject_skips_ambiguous_unrelated_events() -> None:
+    mod = _load_plugin()
+    key = "wire-ambiguous-bundled"
+    mod.store_last_user_text([key], "เทียบราคาบัตรงานนี้")
+    mod.store_events(
+        key,
+        [
+            {
+                "title": title,
+                "ticket_tiers": [
+                    {"zone": "A", "price_min": 100},
+                    {"zone": "B", "price_min": 200},
+                ],
+            }
+            for title in ("Alpha Live", "Beta Live")
+        ],
+    )
+    completion = {
+        "object": "chat.completion",
+        "choices": [{"message": {"content": "ยังเลือกงานไม่ได้"}}],
+    }
+    mod.attach_catalog_to_payload(completion, key)
+    assert completion["choices"][0]["message"]["content"] == "ยังเลือกงานไม่ได้"
 
 
 def main() -> None:

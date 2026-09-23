@@ -9,10 +9,77 @@ COMPARE_ASK_RE = re.compile(
     r"เทียบราคา|โซนไหนคุ้ม|compare\s+(?:ticket\s+)?prices?|ticket\s+prices?",
     re.IGNORECASE,
 )
+NIGHTLIFE_RE = re.compile(
+    r"ร้าน|ผับ|บาร์|คาเฟ่|จองโต๊ะ|nightlife|"
+    r"(?:compare|เทียบ)\s+(?:the\s+)?stores?\b|stores?\s+compare",
+    re.IGNORECASE,
+)
+GENERIC_TITLE_TOKENS = {
+    "concert",
+    "event",
+    "festival",
+    "live",
+    "music",
+    "show",
+}
 
 
 def is_price_compare_ask(text: str) -> bool:
-    return bool(COMPARE_ASK_RE.search(str(text or "")))
+    value = str(text or "")
+    return not NIGHTLIFE_RE.search(value) and bool(COMPARE_ASK_RE.search(value))
+
+
+def _event_product_id(event: dict) -> int:
+    for raw in (event.get("product_id"), event.get("id")):
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    match = re.search(r"/concert/(\d+)", str(event.get("url") or ""))
+    return int(match.group(1)) if match else 0
+
+
+def matching_event(events: list[dict], user_text: str) -> dict | None:
+    """Return an event explicitly identified by product id, URL, or title."""
+    text = str(user_text or "")
+    for event in events:
+        product_id = _event_product_id(event)
+        if product_id and re.search(rf"(?<!\d){product_id}(?!\d)", text):
+            return event
+
+    normalized = text.casefold()
+    scored = []
+    for event in events:
+        tokens = {
+            token.casefold()
+            for token in re.findall(r"[A-Za-z0-9ก-๙]+", str(event.get("title") or ""))
+            if len(token) >= 4
+            and not token.isdigit()
+            and token.casefold() not in GENERIC_TITLE_TOKENS
+        }
+        score = sum(len(token) for token in tokens if token in normalized)
+        if score:
+            scored.append((score, event))
+    if not scored:
+        return None
+    best = max(score for score, _ in scored)
+    matches = [event for score, event in scored if score == best]
+    return matches[0] if len(matches) == 1 else None
+
+
+def select_price_compare_event(events: list[dict], user_text: str) -> dict | None:
+    eligible = [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and len(usable_tiers(event.get("ticket_tiers") or [])) >= 2
+    ]
+    matched = matching_event(eligible, user_text)
+    if matched:
+        return matched
+    return eligible[0] if len(eligible) == 1 else None
 
 
 def _finite_price(value: Any) -> float | None:

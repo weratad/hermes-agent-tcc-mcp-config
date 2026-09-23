@@ -336,7 +336,7 @@ def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
     assert m.peek_stored_layout(key) == "compare_value"
 
 
-def test_price_compare_reply_uses_find_events_card_with_most_tiers():
+def test_price_compare_reply_prefers_event_named_by_user():
     m = load()
     key = "price-compare-card"
     m._ensure_armed = lambda: None
@@ -353,6 +353,8 @@ def test_price_compare_reply_uses_find_events_card_with_most_tiers():
                         "ticket_tiers": [
                             {"zone": "GA", "price_min": 500},
                             {"zone": "VIP", "price_min": 1500},
+                            {"zone": "VVIP", "price_min": 2500},
+                            {"zone": "Ultra", "price_min": 3500},
                         ],
                     },
                     {
@@ -391,6 +393,38 @@ def test_price_compare_reply_uses_find_events_card_with_most_tiers():
     assert m.peek_stored_layout(key) == "compare_value"
 
 
+def test_price_compare_reply_skips_ambiguous_unrelated_events():
+    m = load()
+    key = "price-compare-ambiguous"
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {
+            key: {
+                "events": [
+                    {
+                        "title": "Alpha Live",
+                        "ticket_tiers": [
+                            {"zone": "GA", "price_min": 500},
+                            {"zone": "VIP", "price_min": 1500},
+                        ],
+                    },
+                    {
+                        "title": "Beta Live",
+                        "ticket_tiers": [
+                            {"zone": "GA", "price_min": 600},
+                            {"zone": "VIP", "price_min": 1600},
+                        ],
+                    },
+                ],
+                "expires": time.time() + 60,
+            }
+        },
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+    reply = "ยังเลือกงานไม่ได้"
+    assert m.ensure_price_compare_reply(key, "เทียบราคาบัตรงานนี้", reply) == reply
+
+
 if __name__ == "__main__":
     test_normalize_accepts_similar_cards()
     test_store_take_attach()
@@ -403,5 +437,6 @@ if __name__ == "__main__":
     test_present_layout_rejects_prose_when_catalog_events()
     test_force_retry_when_prose_with_catalog_events()
     test_price_compare_reply_uses_get_event_tiers_and_compare_value()
-    test_price_compare_reply_uses_find_events_card_with_most_tiers()
+    test_price_compare_reply_prefers_event_named_by_user()
+    test_price_compare_reply_skips_ambiguous_unrelated_events()
     print("tcc-layout-artifacts ok")

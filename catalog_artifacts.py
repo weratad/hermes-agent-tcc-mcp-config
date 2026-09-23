@@ -495,39 +495,45 @@ def _event_product_id(event: Dict[str, Any]) -> int:
     return int(match.group(1)) if match else 0
 
 
-def enrich_event_ticket_tiers(events: List[Dict[str, Any]]) -> None:
-    """Best-effort detail lookup for thin list/search event cards."""
-    for event in events:
-        try:
-            if len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or [])) >= 2:
-                continue
-            product_id = _event_product_id(event)
-            detail_url = _event_detail_url(product_id) if product_id else ""
-            if not detail_url:
-                continue
-            request = urllib.request.Request(
-                detail_url,
-                headers={"Accept": "application/json", "User-Agent": "tcc-catalog-artifacts/1"},
-            )
-            with urllib.request.urlopen(request, timeout=_DETAIL_TIMEOUT_SEC) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            detail = payload.get("data") if isinstance(payload, dict) else None
-            if not isinstance(detail, dict):
-                detail = payload
-            tiers = detail.get("ticket_tiers") if isinstance(detail, dict) else None
-            if not isinstance(tiers, list):
-                continue
-            copied = [dict(tier) for tier in tiers if isinstance(tier, dict)]
-            event["ticket_tiers"] = copied
-            event["ticket_tier_count"] = len(
-                _price_compare_format.usable_tiers(copied)
-            )
-        except Exception as exc:
-            _log.debug(
-                "catalog artifacts: event tier enrichment failed product_id=%s: %s",
-                _event_product_id(event),
-                exc,
-            )
+def enrich_event_ticket_tiers(
+    events: List[Dict[str, Any]], user_text: str = ""
+) -> None:
+    """Best-effort detail lookup for one event relevant to the compare ask."""
+    event = _price_compare_format.matching_event(events, user_text)
+    if event is None:
+        event = next((row for row in events if _event_product_id(row)), None)
+    if event is None:
+        return
+    try:
+        if len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or [])) >= 2:
+            return
+        product_id = _event_product_id(event)
+        detail_url = _event_detail_url(product_id) if product_id else ""
+        if not detail_url:
+            return
+        request = urllib.request.Request(
+            detail_url,
+            headers={"Accept": "application/json", "User-Agent": "tcc-catalog-artifacts/1"},
+        )
+        with urllib.request.urlopen(request, timeout=_DETAIL_TIMEOUT_SEC) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        detail = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(detail, dict):
+            detail = payload
+        tiers = detail.get("ticket_tiers") if isinstance(detail, dict) else None
+        if not isinstance(tiers, list):
+            return
+        copied = [dict(tier) for tier in tiers if isinstance(tier, dict)]
+        event["ticket_tiers"] = copied
+        event["ticket_tier_count"] = len(
+            _price_compare_format.usable_tiers(copied)
+        )
+    except Exception as exc:
+        _log.debug(
+            "catalog artifacts: event tier enrichment failed product_id=%s: %s",
+            _event_product_id(event),
+            exc,
+        )
 
 
 def _unwrap_result_envelope(payload: Any, *, depth: int = 0) -> Any:
@@ -618,37 +624,15 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
         if isinstance(candidate, dict) and isinstance(candidate.get("content"), str):
             message = candidate
     user_text = peek_last_user_text(*key_list)
-    attached_layout = None
-    existing_hermes = payload.get("hermes")
-    if isinstance(existing_hermes, dict):
-        layout = existing_hermes.get("layout")
-        if isinstance(layout, dict):
-            attached_layout = str(layout.get("mode") or "")
-    layout_state = __import__("sys").modules.get("_tcc_layout_artifacts_shared")
-    stored_layout = None
-    if isinstance(layout_state, dict):
-        layout_bag = layout_state.get("bag")
-        if isinstance(layout_bag, dict):
-            for key in key_list:
-                row = layout_bag.get(key)
-                if isinstance(row, dict) and row.get("layout"):
-                    stored_layout = str(row["layout"])
-                    break
-    compare_ask = (
-        _price_compare_format.is_price_compare_ask(user_text)
-        or (stored_layout or attached_layout) in {"compare_value", "compare_zone"}
-    )
+    compare_ask = _price_compare_format.is_price_compare_ask(user_text)
     if compare_ask and message is not None:
         reply = str(message.get("content") or "")
-        candidates = [
-            (
-                len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or [])),
-                event,
-            )
-            for event in events
-            if isinstance(event, dict)
-        ]
-        n_tiers, event = max(candidates, key=lambda row: row[0], default=(0, None))
+        event = _price_compare_format.select_price_compare_event(events, user_text)
+        n_tiers = (
+            len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or []))
+            if event is not None
+            else 0
+        )
         if (
             n_tiers >= 2
             and event is not None
@@ -728,17 +712,21 @@ def on_post_tool_call(
     events = events_from_tool_payload(payload, layout=layout_for_tool(name))
     if not events:
         return
-    if name.endswith(_ENRICH_TOOL_SUFFIXES):
-        try:
-            enrich_event_ticket_tiers(events)
-        except Exception:
-            _log.exception("catalog artifacts: event tier enrichment failed")
     keys = [
         str(session_id or "").strip(),
         str(api_request_id or "").strip(),
         str(task_id or "").strip(),
         *_session_key_aliases(),
     ]
+    user_text = peek_last_user_text(*keys)
+    if (
+        name.endswith(_ENRICH_TOOL_SUFFIXES)
+        and _price_compare_format.is_price_compare_ask(user_text)
+    ):
+        try:
+            enrich_event_ticket_tiers(events, user_text)
+        except Exception:
+            _log.exception("catalog artifacts: event tier enrichment failed")
     stored = False
     for key in keys:
         if key:
