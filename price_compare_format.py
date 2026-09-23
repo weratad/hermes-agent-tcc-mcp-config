@@ -318,6 +318,7 @@ def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
 def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, str]]:
     """Pull จุดเด่น/จุดที่ต้องคิด from a model zone-essay into marker cells.
 
+    Supports both `GA:` and screenshot-style `GA — 950 บาท` headers.
     Hermes finalize: model voice fills cells; plugin owns ⚖️/🎫 shape.
     """
     body = str(text or "")
@@ -330,10 +331,9 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
     if not labels:
         return out
 
+    label_alt = "|".join(re.escape(l) for l in labels)
     parts = re.split(
-        r"(?=(?:^|\n)\s*(?:"
-        + "|".join(re.escape(l) for l in labels)
-        + r")\s*[:：])",
+        rf"(?=(?:^|\n)\s*(?:{label_alt})\b)",
         body,
         flags=re.IGNORECASE,
     )
@@ -343,7 +343,11 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
             continue
         matched = None
         for label in labels:
-            if re.match(rf"^{re.escape(label)}\s*[:：]", chunk, re.IGNORECASE):
+            if re.match(
+                rf"^{re.escape(label)}\b(?:\s*[—–\-:：]|\s|$)",
+                chunk,
+                re.IGNORECASE,
+            ):
                 matched = label
                 break
         if not matched:
@@ -357,7 +361,6 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
         if len(cons) > 80:
             cons = cons[:80].rstrip() + "…"
         if pros or cons:
-            # Leave blank cons for _marker_table defaults to fill.
             out[matched.casefold()] = (pros, cons)
     return out
 
@@ -630,7 +633,7 @@ def compose_price_compare_reply(
         _extract_marker_blurbs(reply, rows),
         _extract_dash_zone_blurbs(reply, rows),
         _extract_insight_blurbs(reply, rows),
-        _extract_zone_blurbs(reply, rows) if _is_zone_essay(reply) else {},
+        _extract_zone_blurbs(reply, rows),
     )
     model_pros = sum(
         1

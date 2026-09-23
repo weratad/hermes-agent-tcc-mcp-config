@@ -424,3 +424,39 @@ def test_compose_lifts_ai_insight_lines_into_cells():
     assert "บาลานซ์งบกับความคุ้ม" in reply
     assert "ตัวเลือกถูกสุดในงานนี้" not in reply
     assert "AI Insight:" not in reply
+
+
+def test_compose_lifts_ga_emdash_zone_essay_into_table():
+    """Screenshot format: GA — 950 บาท / จุดเด่น: … must become ⚖️/🎫 table."""
+    model = (
+        "เทียบราคา Night Market Live\n"
+        "\n"
+        "GA — 950 บาท\n"
+        "จุดเด่น: ถูกสุด เหมาะกับคนอยากลองงานนี้แบบคุมงบ\n"
+        "จุดที่ต้องคิด: โซนเริ่มต้น อาจไม่พรีเมียมเท่าตัวเลือกบน\n"
+        "\n"
+        "VIP — 2,100 บาท\n"
+        "จุดเด่น: สมดุลที่สุดระหว่างราคาและประสบการณ์\n"
+        "จุดที่ต้องคิด: กระโดดราคาจาก GA ค่อนข้างชัด\n"
+        "\n"
+        "VVIP — 3,900 บาท\n"
+        "จุดเด่น: โซนสูงสุดของงาน\n"
+        "จุดที่ต้องคิด: เหมาะกับคนที่อยากได้ฟีลเต็มและไม่ติดงบ\n"
+        "\n"
+        "ถ้าเอาคุ้มสุด ผมเชียร์ VIP\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 950},
+        {"zone": "VIP", "price_min": 2100},
+        {"zone": "VVIP", "price_min": 3900},
+    ]
+    reply = compose_price_compare_reply(
+        model, tiers, title="Night Market Live", allow_structural_fallback=False
+    )
+    assert has_price_compare_markers(reply)
+    assert reply.count("🎫") == 3
+    assert "ถูกสุด เหมาะกับคนอยากลองงานนี้แบบคุมงบ" in reply
+    assert "สมดุลที่สุดระหว่างราคาและประสบการณ์" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+    # essay lines should not remain as prose fake-table
+    assert "จุดเด่น:" not in reply
