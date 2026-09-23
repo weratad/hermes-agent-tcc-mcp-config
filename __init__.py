@@ -76,6 +76,8 @@ def register(ctx) -> None:
         )
 
     # AI Ask UI artifacts — process-wide; runtime gated to user-* profiles.
+    # If standalone tcc-*-artifacts plugins are also enabled, their patches may
+    # win (same shared attr) and bypass the user-* gate — disable them.
     try:
         catalog_artifacts.register(ctx)
     except Exception:

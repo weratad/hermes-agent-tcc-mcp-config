@@ -468,6 +468,12 @@ def is_complete(target: Path) -> bool:
     return (target / "config.yaml").is_file() and (target / ".env").is_file()
 
 
+def _ai_ask_toolsets_present(config_text: str) -> bool:
+    """True when a user-* profile config already lists clarify + tcc-layout."""
+    text = str(config_text or "")
+    return "- clarify" in text and "- tcc-layout" in text
+
+
 def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
     """Create — or repair — the profile for ``name`` if allowed.
 
@@ -486,12 +492,21 @@ def ensure_profile(name: str, *, bearer: str) -> Tuple[bool, str]:
     if not check_gateway_key(bearer):
         return False, "unauthorized"
 
+    is_user_profile_name = _load_ai_ask_profile().is_user_profile_name
+
     target = profile_dir(name)
     if target.is_dir():
         if is_complete(target):
             wanted = _default_api_server_key()
             have = (read_env_file(target / ".env").get("API_SERVER_KEY") or "").strip()
-            if have == wanted:
+            needs_ai_ask_toolsets = False
+            if have == wanted and is_user_profile_name(name):
+                try:
+                    cfg = (target / "config.yaml").read_text(encoding="utf-8")
+                except OSError:
+                    cfg = ""
+                needs_ai_ask_toolsets = not _ai_ask_toolsets_present(cfg)
+            if have == wanted and not needs_ai_ask_toolsets:
                 return True, "exists"
             _write_profile_config(target, profile_name=target.name)
             write_env_file(

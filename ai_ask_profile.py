@@ -43,4 +43,18 @@ def active_profile_name() -> str:
 
 
 def is_ai_ask_user_profile() -> bool:
-    return is_user_profile_name(active_profile_name())
+    name = active_profile_name()
+    if name:
+        # Explicit non-user profile (staff/organizer) must stay gated off even
+        # if the session key looks like user-*.
+        return is_user_profile_name(name)
+    # Fallback only when multiplex name is missing.
+    try:
+        from tools.approval import get_current_session_key
+
+        key = str(get_current_session_key(default="") or "").strip()
+        if is_user_profile_name(key):
+            return True
+    except Exception:
+        pass
+    return False

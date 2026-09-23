@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 
@@ -23,6 +24,25 @@ def main() -> None:
     assert not mod.is_user_profile_name("guest-anon")
     assert "present_layout" in mod.AI_ASK_NATIVE_TOOLS
     assert "clarify" in mod.AI_ASK_NATIVE_TOOLS
+
+    tools_pkg = types.ModuleType("tools")
+    approval = types.ModuleType("tools.approval")
+
+    def get_current_session_key(default=""):
+        return "user-42"
+
+    approval.get_current_session_key = get_current_session_key
+    sys.modules["tools"] = tools_pkg
+    sys.modules["tools.approval"] = approval
+
+    mod.active_profile_name = lambda: ""
+    assert mod.is_ai_ask_user_profile() is True
+
+    mod.active_profile_name = lambda: "staff-3"
+    assert mod.is_ai_ask_user_profile() is False
+
+    mod.active_profile_name = lambda: "user-1"
+    assert mod.is_ai_ask_user_profile() is True
     print("ai_ask_profile ok")
 
 

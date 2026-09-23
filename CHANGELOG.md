@@ -2,6 +2,14 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.5.1] — 2026-09-23
+
+### Fixed
+- `ensure_profile` upgrades existing `user-*` configs that still only list `memory` so `clarify` + `tcc-layout` appear without a manual resync
+- `is_ai_ask_user_profile` falls back to session key `user-*` when multiplex profile name is empty
+
+[2.5.1]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.5.1
+
 ## [2.5.0] — 2026-09-23
 
 ### Added

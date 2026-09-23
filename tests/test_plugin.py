@@ -165,6 +165,23 @@ def main():
     check("second call is a cheap no-op", ok and detail == "exists", detail)
     _sh.rmtree(broken, ignore_errors=True)
 
+    print("\n6c. existing user-* profile upgrades AI Ask toolsets on ensure")
+    legacy = envs.profile_dir("user-888001")
+    envs.ensure_profile("user-888001", bearer="stg-gateway-key-0123456789")
+    # Simulate pre-2.5.0 config (memory only).
+    legacy_cfg = (legacy / "config.yaml").read_text(encoding="utf-8")
+    legacy_cfg = legacy_cfg.replace("    - clarify\n", "").replace("    - tcc-layout\n", "")
+    (legacy / "config.yaml").write_text(legacy_cfg, encoding="utf-8")
+    check("legacy user config lacks clarify", "- clarify" not in (legacy / "config.yaml").read_text(encoding="utf-8"))
+    ok, detail = envs.ensure_profile("user-888001", bearer="stg-gateway-key-0123456789")
+    check("ensure repairs missing AI Ask toolsets", ok and detail == "repaired", detail)
+    upgraded = (legacy / "config.yaml").read_text(encoding="utf-8")
+    check("upgraded user has clarify", "- clarify" in upgraded)
+    check("upgraded user has tcc-layout", "- tcc-layout" in upgraded)
+    ok, detail = envs.ensure_profile("user-888001", bearer="stg-gateway-key-0123456789")
+    check("second ensure is exists after upgrade", ok and detail == "exists", detail)
+    _sh.rmtree(legacy, ignore_errors=True)
+
     print("\n7. memory isolation between users")
     envs.ensure_profile("staff-689", bearer="stg-gateway-key-0123456789")
     staff_cfg = (envs.profile_dir("staff-689") / "config.yaml").read_text(encoding="utf-8")
