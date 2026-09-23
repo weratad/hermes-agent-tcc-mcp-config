@@ -142,6 +142,28 @@ def test_compose_keeps_model_markers_with_filled_cells():
 
 
 
+
+def test_compose_lifts_colon_zone_prose_into_cells():
+    model = (
+        "คุ้มสุดคือ GA\n"
+        "GA 550 บาท: คุ้มสุดถ้าอยากเข้าถึงงานในงบประหยัด\n"
+        "VIP 1,200 บาท: กลาง ๆ น่าเลือกถ้าอยากได้สมดุลระหว่างราคาและประสบการณ์\n"
+        "VVIP 2,200 บาท: แพงสุด เหมาะคนที่อยากจัดเต็ม\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert "คุ้มสุดถ้าอยากเข้าถึงงานในงบประหยัด" in reply
+    assert "สมดุลระหว่างราคาและประสบการณ์" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+    assert "โซน GA ·" not in reply
+    # Zone lines should not repeat above the table
+    assert "GA 550 บาท:" not in reply
+
+
 def test_compose_lifts_model_dash_zone_prose_into_cells():
     """Model zone lines (GA 550 บาท — …) must fill cells — not canned โซน+ราคา."""
     model = (

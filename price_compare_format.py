@@ -203,14 +203,19 @@ def _is_zone_essay(text: str) -> bool:
     return pros >= 2 or (pros >= 1 and cons >= 1)
 
 
-def _short_intro(prose: str, *, title: str = "") -> str:
-    """Keep a short non-table intro; never keep zone-essay lines."""
+def _short_intro(prose: str, *, title: str = "", tier_labels: list[str] | None = None) -> str:
+    """Keep a short non-table intro; never keep zone-essay / zone-price lines."""
+    labels = [str(x).strip() for x in (tier_labels or []) if str(x).strip()]
     kept: list[str] = []
     for raw in str(prose or "").splitlines():
         line = raw.strip()
         if not line or _is_structured_noise(line):
             continue
         if "จุดเด่น" in line or "จุดที่ต้องคิด" in line:
+            continue
+        if labels and any(
+            re.match(rf"^{re.escape(lab)}\b", line, flags=re.IGNORECASE) for lab in labels
+        ):
             continue
         kept.append(line)
         if sum(len(x) for x in kept) >= 140:
@@ -233,7 +238,8 @@ def _keep_model_voice(prose: str, *, title: str = "", limit: int = 500) -> str:
         return f"เทียบราคาบัตร {title_s}"
     # Prefer fuller voice when it is not a fake table.
     if _is_zone_essay(cleaned):
-        return _short_intro(cleaned, title=title)
+        labels = re.findall(r"(?:^|\n)\s*([A-Za-z0-9ก-๙]{1,24})\s*[:：]", cleaned)
+        return _short_intro(cleaned, title=title, tier_labels=labels[:8])
     if len(cleaned) > limit:
         # Trim on sentence boundary when possible.
         cut = cleaned[:limit].rstrip()
@@ -382,7 +388,7 @@ def _extract_marker_blurbs(reply: str, tiers: list[dict]) -> dict[str, tuple[str
 def _extract_dash_zone_blurbs(
     text: str, tiers: list[dict]
 ) -> dict[str, tuple[str, str]]:
-    """Lift model lines like 'GA 550 บาท — ถูกสุด เหมาะถ้า…' into marker cells."""
+    """Lift model lines like 'GA 550 บาท — …' or 'GA 550 บาท: …' into cells."""
     body = str(text or "")
     out: dict[str, tuple[str, str]] = {}
     rows = usable_tiers(tiers)
@@ -392,25 +398,25 @@ def _extract_dash_zone_blurbs(
             continue
         match = re.search(
             rf"(?:^|\n)\s*{re.escape(label)}\b[^\n]{{0,48}}?"
-            rf"(?:—|–|-)\s*(.+?)(?=\n|$)",
+            rf"(?:—|–|-|[:：])\s*(.+?)(?=\n|$)",
             body,
             flags=re.IGNORECASE,
         )
         if not match:
             continue
         reason = _cell(match.group(1))
+        # Drop leading price residue if separator was weak ("550 บาท: advice").
+        reason = re.sub(r"^(?:\d[\d,]*\s*บาท\s*[:：—–-]?\s*)", "", reason).strip()
         if not reason or _is_canned_cell(reason):
             continue
         if len(reason) > 100:
             reason = reason[:100].rstrip() + "…"
-        # Split light cons when model used แต่/อย่างไร; else pros = full reason.
         split = re.split(r"\s+(?:แต่|อย่างไรก็ตาม)\s+", reason, maxsplit=1)
         pros = _cell(split[0])
         cons = _cell(split[1]) if len(split) > 1 else ""
         if _is_blank_cell(pros):
             continue
         if _is_blank_cell(cons):
-            # Factual gap only — not zone-name tautology.
             cheapest = float(rows[0]["price_min"])
             delta = max(0, int(round(float(tier["price_min"]) - cheapest)))
             if index == 0:
@@ -579,9 +585,10 @@ def compose_price_compare_reply(
         _extract_zone_blurbs(reply, rows) if _is_zone_essay(reply) else {},
     )
     table = _marker_table(rows, blurbs=blurbs)
+    labels = [_tier_label(t) for t in rows if _tier_label(t)]
     # Zone/dash essays already live in cells — keep a short intro only (avoid ซ้ำ).
-    if _is_zone_essay(reply) or _looks_like_zone_price_lines(reply, rows):
-        voice = _short_intro(_model_prose(reply), title=title)
+    if _is_zone_essay(reply) or _looks_like_zone_price_lines(reply, rows) or len(blurbs) >= 2:
+        voice = _short_intro(_model_prose(reply), title=title, tier_labels=labels)
     else:
         voice = _keep_model_voice(reply, title=title)
     return f"{voice}\n{table}"
