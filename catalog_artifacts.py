@@ -618,24 +618,35 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
             )
         return payload
     choices = payload.get("choices")
+    choice = None
     message = None
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-        candidate = choices[0].get("message")
+        choice = choices[0]
+        candidate = choice.get("message")
         if isinstance(candidate, dict) and isinstance(candidate.get("content"), str):
             message = candidate
     user_text = peek_last_user_text(*key_list)
     compare_ask = _price_compare_format.is_price_compare_ask(user_text)
-    if compare_ask and message is not None:
-        reply = str(message.get("content") or "")
+    if compare_ask:
         event = _price_compare_format.select_price_compare_event(events, user_text)
         n_tiers = (
             len(_price_compare_format.usable_tiers(event.get("ticket_tiers") or []))
             if event is not None
             else 0
         )
+        is_finish_chunk = (
+            payload.get("object") == "chat.completion.chunk"
+            and isinstance(choice, dict)
+            and bool(choice.get("finish_reason"))
+        )
+        if n_tiers >= 2 and event is not None and is_finish_chunk and message is None:
+            message = {"role": "assistant", "content": ""}
+            choice["message"] = message
+        reply = str(message.get("content") or "") if message is not None else ""
         if (
             n_tiers >= 2
             and event is not None
+            and message is not None
             and not _price_compare_format.has_price_compare_markers(reply)
         ):
             message["content"] = _price_compare_format.format_price_compare_markers(
@@ -685,6 +696,20 @@ def _session_key_aliases() -> List[str]:
     except Exception:
         pass
     return aliases
+
+
+def _payload_session_keys(payload: Dict[str, Any]) -> List[str]:
+    keys: List[str] = []
+    hermes = payload.get("hermes") if isinstance(payload, dict) else None
+    sources = [payload, hermes]
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for name in ("session_id", "session_key", "api_request_id", "task_id"):
+            value = str(source.get(name) or "").strip()
+            if value and value not in keys:
+                keys.append(value)
+    return keys
 
 
 def on_post_tool_call(
@@ -804,7 +829,11 @@ def _install_response_patch() -> bool:
             ):
                 choices = data.get("choices") or []
                 if choices and choices[0].get("finish_reason"):
-                    attach_catalog_to_payload(data, *_session_key_aliases())
+                    attach_catalog_to_payload(
+                        data,
+                        *_payload_session_keys(data),
+                        *_session_key_aliases(),
+                    )
             if event is None:
                 return original_frame(data)
             return original_frame(data, event=event)

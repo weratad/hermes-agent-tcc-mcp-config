@@ -151,6 +151,60 @@ def test_wire_inject_skips_ambiguous_unrelated_events() -> None:
     assert completion["choices"][0]["message"]["content"] == "ยังเลือกงานไม่ได้"
 
 
+def test_wire_inject_creates_message_on_compare_finish_chunk() -> None:
+    mod = _load_plugin()
+    key = "wire-finish-bundled"
+    mod.store_last_user_text([key], "เทียบราคาบัตร Orbit Indie Fest")
+    mod.store_events(
+        key,
+        [
+            {
+                "title": "Orbit Indie Fest",
+                "ticket_tiers": [
+                    {"zone": "Early Bird", "price_min": 990},
+                    {"zone": "Regular", "price_min": 1490},
+                ],
+            }
+        ],
+    )
+    chunk = {
+        "object": "chat.completion.chunk",
+        "choices": [{"delta": {}, "finish_reason": "stop"}],
+    }
+
+    mod.attach_catalog_to_payload(chunk, key)
+
+    content = chunk["choices"][0]["message"]["content"]
+    assert chunk["choices"][0]["message"]["role"] == "assistant"
+    assert "⚖️" in content
+    assert content.count("🎫") == 2
+    assert chunk["hermes"]["layout"] == {"mode": "compare_value"}
+
+
+def test_payload_session_keys_reads_finish_chunk_hermes_aliases() -> None:
+    mod = _load_plugin()
+
+    keys = mod._payload_session_keys(
+        {
+            "session_id": "top-session",
+            "hermes": {
+                "session_id": "nested-session",
+                "session_key": "nested-key",
+                "api_request_id": "nested-request",
+                "task_id": "nested-task",
+            },
+        }
+    )
+
+    assert keys == [
+        "top-session",
+        "nested-session",
+        "nested-key",
+        "nested-request",
+        "nested-task",
+    ]
+
+
 def main() -> None:
     plugin_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
     spec = importlib.util.spec_from_file_location("tcc_catalog_artifacts", plugin_dir / "catalog_artifacts.py")
