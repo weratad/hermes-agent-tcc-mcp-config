@@ -630,28 +630,46 @@ def _peek_catalog_event_rows(*keys: str) -> list:
 
 
 def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> str:
-    """Force deterministic compare markers when get_event returned usable tiers."""
+    """Force deterministic compare markers when get_event returned usable tiers.
+
+    Bare / thin-tier asks must not keep invented ⚖️/🎫 — rewrite to honest prose.
+    """
     if not _price_compare_format.is_price_compare_ask(user_text):
         return reply
 
     keys = _layout_storage_keys(str(session_key or ""))
     events = _peek_catalog_event_rows(*keys)
     event = _price_compare_format.select_price_compare_event(events, user_text)
-    if not event:
-        return reply
+    if event:
+        for key in keys:
+            store_layout(key, "compare_value")
+        _turn_state.layout_called = True
+        _mark_layout_called(*keys)
 
-    for key in keys:
-        store_layout(key, "compare_value")
-    _turn_state.layout_called = True
-    _mark_layout_called(*keys)
+        if not _price_compare_format.needs_price_compare_rewrite(reply):
+            return reply
+        return _price_compare_format.compose_price_compare_reply(
+            reply,
+            event["ticket_tiers"],
+            title=str(event.get("title") or ""),
+            venue=str(event.get("venue") or ""),
+        )
 
-    if not _price_compare_format.needs_price_compare_rewrite(reply):
+    # No ≥2-tier named event: strip fake table markers (P5 bare / P6 thin).
+    matched = _price_compare_format.matching_event(
+        [row for row in events if isinstance(row, dict)],
+        user_text,
+    )
+    if matched is None and not _price_compare_format.has_price_compare_marker_noise(
+        reply
+    ):
         return reply
+    tiers = (matched.get("ticket_tiers") or []) if matched else []
     return _price_compare_format.compose_price_compare_reply(
         reply,
-        event["ticket_tiers"],
-        title=str(event.get("title") or ""),
-        venue=str(event.get("venue") or ""),
+        tiers if isinstance(tiers, list) else [],
+        title=str((matched or {}).get("title") or ""),
+        venue=str((matched or {}).get("venue") or ""),
     )
 
 

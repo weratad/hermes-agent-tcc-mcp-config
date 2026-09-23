@@ -70,16 +70,18 @@ def matching_event(events: list[dict], user_text: str) -> dict | None:
 
 
 def select_price_compare_event(events: list[dict], user_text: str) -> dict | None:
-    eligible = [
-        event
-        for event in events
-        if isinstance(event, dict)
-        and len(usable_tiers(event.get("ticket_tiers") or [])) >= 2
-    ]
-    matched = matching_event(eligible, user_text)
-    if matched:
+    """Return an explicitly named event that has ≥2 usable tiers.
+
+    Bare asks (no product id / title / URL match) never auto-pick a show —
+    that invents a fake compare table (eval P5).
+    """
+    candidates = [event for event in events if isinstance(event, dict)]
+    matched = matching_event(candidates, user_text)
+    if matched is None:
+        return None
+    if len(usable_tiers(matched.get("ticket_tiers") or [])) >= 2:
         return matched
-    return eligible[0] if len(eligible) == 1 else None
+    return None
 
 
 def _finite_price(value: Any) -> float | None:
@@ -402,6 +404,32 @@ def _marker_table(tiers: list[dict], *, blurbs: dict[str, tuple[str, str]] | Non
     return "\n".join(lines)
 
 
+def has_price_compare_marker_noise(reply: str) -> bool:
+    """True when reply contains any ⚖️ / 🎫 lines (valid or malformed)."""
+    text = str(reply or "")
+    if "⚖️" in text:
+        return True
+    return any(ln.strip().startswith("🎫") for ln in text.splitlines())
+
+
+def _honest_no_table_reply(model_reply: str, *, title: str = "") -> str:
+    """Strip fake table markers; keep clarify voice or honest thin-tier copy."""
+    prose = _model_prose(model_reply)
+    honest = "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
+    if not prose:
+        return honest
+    if honest in prose:
+        return prose
+    # Bare ask already clarifying which show — keep that voice, no table.
+    if re.search(
+        r"เลือกงาน|งาน(?:ไหน|ใด)|which\s+(?:show|event|concert)",
+        prose,
+        re.IGNORECASE,
+    ):
+        return prose
+    return f"{prose}\n{honest}"
+
+
 def needs_price_compare_rewrite(reply: str) -> bool:
     """True when wire-inject should finalize markers (Hermes owns table UI)."""
     text = str(reply or "")
@@ -423,20 +451,21 @@ def compose_price_compare_reply(
 ) -> str:
     """Hermes finalize: keep model voice + ensure filled ⚖️/🎫 markers for web.
 
-    - Model markers with real จุดเด่น/จุดที่ต้องคิด → keep
+    - Model markers with real จุดเด่น/จุดที่ต้องคิด → keep (only when ≥2 tiers)
     - Zone-essay → lift blurbs into cells
     - Missing markers or blank/— cells → rebuild table from tiers (+ defaults)
+    - <2 usable tiers → honest no-table (never keep invented ⚖️/🎫)
     """
     reply = str(model_reply or "")
+    rows = usable_tiers(tiers)
+    if len(rows) < 2:
+        return _honest_no_table_reply(reply, title=title)
     if (
         has_price_compare_markers(reply)
         and not _is_zone_essay(reply)
         and not _markers_need_cell_fill(reply)
     ):
         return reply
-    rows = usable_tiers(tiers)
-    if len(rows) < 2:
-        return "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
 
     blurbs = (
         _extract_zone_blurbs(reply, rows)

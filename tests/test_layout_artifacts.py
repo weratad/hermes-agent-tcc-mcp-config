@@ -525,6 +525,80 @@ def test_price_compare_reply_skips_ambiguous_unrelated_events():
     assert m.ensure_price_compare_reply(key, "เทียบราคาบัตรงานนี้", reply) == reply
 
 
+def test_price_compare_bare_ask_strips_fake_table_markers():
+    """P5: bare ask must not keep/inject 🎫 even if one eligible event is in bag."""
+    m = load()
+    key = "price-compare-bare"
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {
+            key: {
+                "events": [
+                    {
+                        "title": "Orbit Indie Fest",
+                        "ticket_tiers": [
+                            {"zone": "GA", "price_min": 1350},
+                            {"zone": "VIP", "price_min": 2700},
+                            {"zone": "VVIP", "price_min": 4990},
+                        ],
+                    }
+                ],
+                "expires": time.time() + 60,
+            }
+        },
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+    reply = (
+        "เลือกงานที่สนใจก่อนได้เลย\n"
+        "⚖️ เทียบ 3 ตัวเลือกที่น่าสนใจ\n"
+        "🎫 ฿1,350|GA|ไกล|คุ้มสุด\n"
+        "🎫 ฿2,700|VIP|กลาง\n"
+        "🎫 ฿4,990|VVIP|แพง\n"
+    )
+    out = m.ensure_price_compare_reply(key, "เทียบราคาบัตร", reply)
+    assert "🎫" not in out
+    assert "⚖️" not in out
+    assert "เลือกงานที่สนใจก่อนได้เลย" in out
+    assert m.peek_stored_layout(key) != "compare_value"
+
+
+def test_price_compare_thin_event_rewrites_malformed_markers():
+    """P6: named thin event → honest no-table; strip malformed ⚖️/🎫."""
+    m = load()
+    key = "price-compare-thin"
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {
+            key: {
+                "events": [
+                    {
+                        "title": "Young K Solo Tour in BANGKOK",
+                        "product_id": 3059,
+                        "ticket_tiers": [],
+                    }
+                ],
+                "expires": time.time() + 60,
+            }
+        },
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+    reply = (
+        "Young K Solo Tour in BANGKOK\n"
+        "⚖️ ราคา: ยังไม่มีข้อมูลบัตร/โซนในระบบ\n"
+        "🎫 จุดเด่น: งานจัดที่ Samyan Mitrtown Hall\n"
+        "🎫 จุดที่ต้องคิด: ไม่มี ticket_tiers\n"
+    )
+    out = m.ensure_price_compare_reply(
+        key,
+        "เทียบราคาบัตร Young K Solo Tour in BANGKOK /concert/3059",
+        reply,
+    )
+    assert "🎫" not in out
+    assert "⚖️" not in out
+    assert "ยังไม่มีราคาแยก" in out
+    assert m.peek_stored_layout(key) != "compare_value"
+
+
 if __name__ == "__main__":
     test_normalize_accepts_similar_cards()
     test_store_take_attach()
@@ -541,4 +615,6 @@ if __name__ == "__main__":
     test_price_compare_without_catalog_still_retries()
     test_price_compare_clarify_without_events_uses_price_compare_retry()
     test_price_compare_reply_skips_ambiguous_unrelated_events()
+    test_price_compare_bare_ask_strips_fake_table_markers()
+    test_price_compare_thin_event_rewrites_malformed_markers()
     print("tcc-layout-artifacts ok")

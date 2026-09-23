@@ -225,9 +225,48 @@ def test_compose_uses_short_default_without_usable_intro():
     assert has_price_compare_markers(reply)
 
 
-def test_compose_leaves_existing_markers_unchanged():
-    existing = "เกริ่นเอง\n⚖️ เทียบ 2 ตัวเลือก\n🎫 ฿550|GA|ประหยัด\n🎫 ฿1,500|VIP|จ่ายเพิ่ม"
-    assert compose_price_compare_reply(existing, []) == existing
+def test_compose_strips_markers_when_no_usable_tiers():
+    """Empty/no tiers → honest prose; never keep invented ⚖️/🎫 table."""
+    existing = (
+        "เกริ่นเอง\n"
+        "⚖️ เทียบ 2 ตัวเลือก\n"
+        "🎫 ฿550|GA|ประหยัด\n"
+        "🎫 ฿1,500|VIP|จ่ายเพิ่ม"
+    )
+    reply = compose_price_compare_reply(existing, [])
+    assert "🎫" not in reply
+    assert "⚖️" not in reply
+    assert "ยังไม่มีราคาแยก" in reply
+    assert "เกริ่นเอง" in reply
+
+
+def test_compose_strips_malformed_markers_for_thin_tiers():
+    """<2 usable tiers (P6): drop fake ⚖️/🎫 even when model invented them."""
+    model = (
+        "Young K Solo Tour in BANGKOK\n\n"
+        "⚖️ ราคา: ยังไม่มีข้อมูลบัตร/โซนในระบบ\n"
+        "🎫 จุดเด่น: งานจัดที่ Samyan Mitrtown Hall\n"
+        "🎫 จุดที่ต้องคิด: ไม่มี ticket_tiers ให้เทียบ\n"
+    )
+    reply = compose_price_compare_reply(
+        model,
+        [{"zone": "TBD", "price_min": None}],
+        title="Young K Solo Tour in BANGKOK",
+    )
+    assert "🎫" not in reply
+    assert "⚖️" not in reply
+    assert "ยังไม่มีราคาแยก" in reply
+
+
+def test_compose_with_one_usable_tier_is_honest_no_table():
+    reply = compose_price_compare_reply(
+        "มีราคาเดียว\n⚖️ เทียบ 1\n🎫 ฿500|a|b",
+        [{"zone": "Only", "price_min": 500}],
+        title="Thin Show",
+    )
+    assert "🎫" not in reply
+    assert "⚖️" not in reply
+    assert "ยังไม่มีราคาแยก" in reply
 
 
 def test_has_price_compare_markers_requires_structure():
@@ -260,3 +299,20 @@ def test_select_event_prefers_product_id_then_title():
     assert select_price_compare_event(events, "เทียบ /concert/5973") is events[1]
     assert select_price_compare_event(events, "เทียบราคาบัตร Sakon") is events[1]
     assert select_price_compare_event(events, "เทียบราคาบัตรงานนี้") is None
+
+
+def test_select_event_bare_ask_does_not_auto_pick_single_eligible():
+    """P5: bare เทียบราคาบัตร must not wire-inject a random show's table."""
+    events = [
+        {
+            "title": "Orbit Indie Fest",
+            "product_id": 3084,
+            "ticket_tiers": [
+                {"zone": "GA", "price_min": 1350},
+                {"zone": "VIP", "price_min": 2700},
+                {"zone": "VVIP", "price_min": 4990},
+            ],
+        }
+    ]
+    assert select_price_compare_event(events, "เทียบราคาบัตร") is None
+    assert select_price_compare_event(events, "เทียบราคาบัตร Orbit Indie Fest") is events[0]

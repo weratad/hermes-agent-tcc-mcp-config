@@ -153,6 +153,91 @@ def test_wire_inject_skips_ambiguous_unrelated_events() -> None:
     assert completion["choices"][0]["message"]["content"] == "ยังเลือกงานไม่ได้"
 
 
+def test_wire_inject_bare_ask_strips_fake_table() -> None:
+    """P5: bare ask + single eligible event must not inject 🎫 markers."""
+    mod = _load_plugin()
+    key = "wire-bare-bundled"
+    mod.store_last_user_text([key], "เทียบราคาบัตร")
+    mod.store_events(
+        key,
+        [
+            {
+                "title": "Orbit Indie Fest",
+                "ticket_tiers": [
+                    {"zone": "GA", "price_min": 1350},
+                    {"zone": "VIP", "price_min": 2700},
+                    {"zone": "VVIP", "price_min": 4990},
+                ],
+            }
+        ],
+    )
+    completion = {
+        "object": "chat.completion",
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "เลือกงานที่สนใจก่อนได้เลย\n"
+                        "⚖️ เทียบ 3 ตัวเลือกที่น่าสนใจ\n"
+                        "🎫 ฿1,350|GA|ไกล|คุ้มสุด\n"
+                        "🎫 ฿2,700|VIP|กลาง\n"
+                        "🎫 ฿4,990|VVIP|แพง\n"
+                    )
+                }
+            }
+        ],
+    }
+    mod.attach_catalog_to_payload(completion, key)
+    content = completion["choices"][0]["message"]["content"]
+    assert "🎫" not in content
+    assert "⚖️" not in content
+    assert "เลือกงานที่สนใจก่อนได้เลย" in content
+    layout = (completion.get("hermes") or {}).get("layout")
+    assert layout != {"mode": "compare_value"}
+
+
+def test_wire_inject_thin_event_strips_malformed_markers() -> None:
+    """P6: named event with 0 usable tiers → honest no-table, no 🎫."""
+    mod = _load_plugin()
+    key = "wire-thin-bundled"
+    mod.store_last_user_text(
+        [key],
+        "เทียบราคาบัตร Young K Solo Tour in BANGKOK https://www.tcc-stg.com/concert/3059",
+    )
+    mod.store_events(
+        key,
+        [
+            {
+                "title": "Young K Solo Tour in BANGKOK",
+                "product_id": 3059,
+                "ticket_tiers": [],
+            }
+        ],
+    )
+    completion = {
+        "object": "chat.completion",
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Young K Solo Tour in BANGKOK\n\n"
+                        "⚖️ ราคา: ยังไม่มีข้อมูลบัตร/โซนในระบบ\n"
+                        "🎫 จุดเด่น: งานจัดที่ Samyan Mitrtown Hall\n"
+                        "🎫 จุดที่ต้องคิด: ไม่มี ticket_tiers\n"
+                    )
+                }
+            }
+        ],
+    }
+    mod.attach_catalog_to_payload(completion, key)
+    content = completion["choices"][0]["message"]["content"]
+    assert "🎫" not in content
+    assert "⚖️" not in content
+    assert "ยังไม่มีราคาแยก" in content
+    layout = (completion.get("hermes") or {}).get("layout")
+    assert layout != {"mode": "compare_value"}
+
+
 def test_wire_inject_creates_message_on_compare_finish_chunk() -> None:
     mod = _load_plugin()
     key = "wire-finish-bundled"

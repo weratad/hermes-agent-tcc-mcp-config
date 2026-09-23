@@ -679,6 +679,27 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
                 "catalog artifacts: price compare markers wire-injected n_tiers=%s",
                 n_tiers,
             )
+        elif message is not None:
+            # P5/P6: strip invented ⚖️/🎫 when no named ≥2-tier event.
+            matched = _price_compare_format.matching_event(
+                [row for row in events if isinstance(row, dict)],
+                user_text,
+            )
+            if matched is not None or _price_compare_format.has_price_compare_marker_noise(
+                reply
+            ):
+                tiers = (matched.get("ticket_tiers") or []) if matched else []
+                sanitized = _price_compare_format.compose_price_compare_reply(
+                    reply,
+                    tiers if isinstance(tiers, list) else [],
+                    title=str((matched or {}).get("title") or ""),
+                    venue=str((matched or {}).get("venue") or ""),
+                )
+                if sanitized != reply:
+                    message["content"] = sanitized
+                    _log.warning(
+                        "catalog artifacts: price compare fake markers stripped"
+                    )
     hermes = payload.get("hermes")
     if not isinstance(hermes, dict):
         hermes = {}
