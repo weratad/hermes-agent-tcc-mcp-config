@@ -332,6 +332,9 @@ def map_catalog_item(raw: Any) -> Optional[Dict[str, Any]]:
     if pid > 0:
         card["product_id"] = pid
     card["ticket_tier_count"] = _ticket_tier_count(raw)
+    tiers = raw.get("ticket_tiers")
+    if isinstance(tiers, list):
+        card["ticket_tiers"] = [dict(t) for t in tiers if isinstance(t, dict)]
     return card
 
 

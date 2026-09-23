@@ -29,6 +29,23 @@ _ai_ask_profile = _load_ai_ask_profile()
 is_ai_ask_user_profile = _ai_ask_profile.is_ai_ask_user_profile
 
 
+def _load_price_compare_format():
+    try:
+        from . import price_compare_format as mod  # type: ignore
+        return mod
+    except ImportError:
+        pass
+    path = _Path(__file__).resolve().parent / "price_compare_format.py"
+    spec = _ilu.spec_from_file_location("_tcc_price_compare_format", path)
+    mod = _ilu.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_price_compare_format = _load_price_compare_format()
+
+
 
 
 _log = logging.getLogger("hermes.plugin.tcc-mcp-config.layout-artifacts")
@@ -459,6 +476,7 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
     _ensure_armed()
     if not is_ai_ask_user_profile():
         return result
+    result = _ensure_price_compare_artifacts(result)
     if getattr(_retry_guard, "active", False):
         result = _ensure_usecase_artifacts(result)
         return result
@@ -569,6 +587,75 @@ def _peek_catalog_event_rows(*keys: str) -> list:
         with lock:
             return _read()
     return _read()
+
+
+def ensure_price_compare_reply(session_key: str, user_text: str, reply: str) -> str:
+    """Force deterministic compare markers when get_event returned usable tiers."""
+    if not _price_compare_format.is_price_compare_ask(user_text):
+        return reply
+
+    keys = _layout_storage_keys(str(session_key or ""))
+    events = _peek_catalog_event_rows(*keys)
+    event = next(
+        (
+            row
+            for row in events
+            if isinstance(row, dict)
+            and row.get("layout") == "poster"
+            and len(_price_compare_format.usable_tiers(row.get("ticket_tiers") or [])) >= 2
+        ),
+        None,
+    )
+    if not event:
+        return reply
+
+    for key in keys:
+        store_layout(key, "compare_value")
+    _turn_state.layout_called = True
+    _mark_layout_called(*keys)
+
+    if _price_compare_format.has_price_compare_markers(reply):
+        return reply
+    return _price_compare_format.format_price_compare_markers(
+        event["ticket_tiers"],
+        title=str(event.get("title") or ""),
+        venue=str(event.get("venue") or ""),
+    )
+
+
+def _ensure_price_compare_artifacts(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    messages = result.get("messages")
+    try:
+        user_text = _load_usecase_packs().last_user_text(messages)
+    except Exception:
+        return result
+    keys = _session_key_aliases()
+    if not keys or not user_text:
+        return result
+
+    reply = result.get("final_response")
+    if not isinstance(reply, str):
+        reply = ""
+        if isinstance(messages, list):
+            for row in reversed(messages):
+                if isinstance(row, dict) and row.get("role") == "assistant":
+                    content = row.get("content")
+                    if isinstance(content, str):
+                        reply = content
+                        break
+    ensured = ensure_price_compare_reply(keys[0], user_text, reply)
+    if ensured == reply:
+        return result
+
+    result["final_response"] = ensured
+    if isinstance(messages, list):
+        for row in reversed(messages):
+            if isinstance(row, dict) and row.get("role") == "assistant":
+                row["content"] = ensured
+                break
+    return result
 
 
 def _ensure_usecase_artifacts(result: Any) -> Any:

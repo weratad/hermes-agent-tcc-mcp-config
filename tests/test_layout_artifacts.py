@@ -218,6 +218,52 @@ def test_force_retry_when_prose_with_catalog_events():
     assert m.peek_stored_layout(key) is None
 
 
+def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
+    m = load()
+    key = "price-compare"
+    m._ensure_armed = lambda: None
+    m._session_key_aliases = lambda: [key]
+    m.store_layout(key, "event_detail")
+    m._mark_layout_called(key)
+    sys.modules["_tcc_catalog_artifacts_shared"] = {
+        "bag": {
+            key: {
+                "events": [
+                    {
+                        "title": "Sakon Festival",
+                        "venue": "สกลนคร",
+                        "layout": "poster",
+                        "ticket_tiers": [
+                            {"zone": "Early Bird", "price_min": 888},
+                            {"zone": "VIP", "price_min": 10000},
+                        ],
+                    }
+                ],
+                "expires": time.time() + 60,
+            }
+        },
+        "last_events": {},
+        "lock": threading.Lock(),
+    }
+
+    result = m.maybe_retry_layout(
+        object(),
+        {
+            "final_response": "งานนี้มีบัตรหลายราคาให้เลือกครับ",
+            "messages": [
+                {"role": "user", "content": "เทียบราคาบัตร Sakon Festival"},
+                {"role": "assistant", "content": "งานนี้มีบัตรหลายราคาให้เลือกครับ"},
+            ],
+        },
+        lambda **kwargs: None,
+    )
+
+    assert "⚖️" in result["final_response"]
+    assert result["final_response"].count("🎫") == 2
+    assert result["messages"][-1]["content"] == result["final_response"]
+    assert m.peek_stored_layout(key) == "compare_value"
+
+
 if __name__ == "__main__":
     test_normalize_accepts_similar_cards()
     test_store_take_attach()
@@ -229,4 +275,5 @@ if __name__ == "__main__":
     test_retry_suppressed_when_layout_called_this_turn()
     test_present_layout_rejects_prose_when_catalog_events()
     test_force_retry_when_prose_with_catalog_events()
+    test_price_compare_reply_uses_get_event_tiers_and_compare_value()
     print("tcc-layout-artifacts ok")
