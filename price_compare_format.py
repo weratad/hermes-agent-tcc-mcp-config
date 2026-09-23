@@ -162,69 +162,295 @@ def has_price_compare_markers(reply: str) -> bool:
     return True
 
 
+def _is_structured_noise(line: str) -> bool:
+    text = line.strip()
+    if not text:
+        return False
+    if text.startswith(("⚖️", "🎫", "🏁", "💬")):
+        return True
+    if re.match(r"^ราคา\s*\|", text, re.IGNORECASE):
+        return True
+    if text.startswith("|") or re.match(r"^:?-{3,}\s*\|", text):
+        return True
+    if text.count("|") >= 2:
+        return True
+    # Model often reinvents the Figma table as prose labels — drop those lines.
+    if re.match(r"^(?:จุดเด่น|จุดที่ต้องคิด|เหมาะกับ)\s*[:：]", text):
+        return True
+    if re.match(
+        r"^(?:GA|VIP|VVIP|Standing|Seat|โซน\b)[^\n]{0,40}[:：].*(?:บาท|฿|\d)",
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _is_zone_essay(text: str) -> bool:
+    """True when the model pasted a fake zone table in prose."""
+    body = str(text or "")
+    pros = len(re.findall(r"จุดเด่น\s*[:：]", body))
+    cons = len(re.findall(r"จุดที่ต้องคิด\s*[:：]", body))
+    return pros >= 2 or (pros >= 1 and cons >= 1)
+
+
+def _short_intro(prose: str, *, title: str = "") -> str:
+    """Keep a short non-table intro; never keep zone-essay lines."""
+    kept: list[str] = []
+    for raw in str(prose or "").splitlines():
+        line = raw.strip()
+        if not line or _is_structured_noise(line):
+            continue
+        if "จุดเด่น" in line or "จุดที่ต้องคิด" in line:
+            continue
+        kept.append(line)
+        if sum(len(x) for x in kept) >= 140:
+            break
+    intro = "\n".join(kept[:2]).strip()
+    if intro:
+        return intro
+    title_s = str(title or "").strip() or "งานนี้"
+    return f"เทียบราคาบัตร {title_s}"
+
+
+def _keep_model_voice(prose: str, *, title: str = "", limit: int = 500) -> str:
+    """Hermes principle: model owns the advice; plugin only owns table markers.
+
+    Keep natural intro sentences; drop zone-essay / marker noise.
+    """
+    cleaned = _model_prose(prose)
+    if not cleaned:
+        title_s = str(title or "").strip() or "งานนี้"
+        return f"เทียบราคาบัตร {title_s}"
+    # Prefer fuller voice when it is not a fake table.
+    if _is_zone_essay(cleaned):
+        return _short_intro(cleaned, title=title)
+    if len(cleaned) > limit:
+        # Trim on sentence boundary when possible.
+        cut = cleaned[:limit].rstrip()
+        for sep in ("।", "。", ".", "!", "?", "\n"):
+            idx = cut.rfind(sep)
+            if idx >= 80:
+                cut = cut[: idx + 1].rstrip()
+                break
+        return cut
+    return cleaned
+
+
+def _model_prose(reply: str) -> str:
+    """Keep the model's own wording; drop pipe-tables / marker / fake-table lines."""
+    kept: list[str] = []
+    blank_run = 0
+    for raw_line in str(reply or "").splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            blank_run += 1
+            if kept and blank_run <= 1:
+                kept.append("")
+            continue
+        blank_run = 0
+        if _is_structured_noise(stripped):
+            continue
+        kept.append(stripped)
+    prose = "\n".join(kept).strip()
+    if len(prose) > 1200:
+        prose = prose[:1200].rstrip()
+    return prose
+
+
+def _is_blank_cell(text: str) -> bool:
+    return str(text or "").strip() in ("", "—", "-", "–", "−", "–")
+
+
+def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
+    """Short จุดเด่น / จุดที่ต้องคิด from tier rank + price gap (not empty —)."""
+    label = _tier_label(tier) or "โซนนี้"
+    n = len(rows)
+    cheapest = float(rows[0]["price_min"])
+    price = float(tier["price_min"])
+    delta = max(0, int(round(price - cheapest)))
+    if index == 0:
+        return (
+            f"โซน {label} · ราคาเริ่มต้น",
+            "สิทธิ์/มุมมองมักน้อยกว่าโซนบน",
+        )
+    if index == n - 1:
+        cons = (
+            f"แพงกว่าโซนถูกสุดประมาณ {_format_baht(delta)}"
+            if delta
+            else "ราคาสูงสุดในตารางนี้"
+        )
+        return (f"โซน {label} · ระดับบนสุด", cons)
+    return (
+        f"โซน {label} · สมดุลราคากับประสบการณ์",
+        f"จ่ายเพิ่มจากโซนถูกสุดประมาณ {_format_baht(delta)}",
+    )
+
+
+def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, str]]:
+    """Pull จุดเด่น/จุดที่ต้องคิด from a model zone-essay into marker cells.
+
+    Hermes finalize: model voice fills cells; plugin owns ⚖️/🎫 shape.
+    """
+    body = str(text or "")
+    out: dict[str, tuple[str, str]] = {}
+    labels = []
+    for tier in usable_tiers(tiers):
+        label = _tier_label(tier)
+        if label:
+            labels.append(label)
+    if not labels:
+        return out
+
+    parts = re.split(
+        r"(?=(?:^|\n)\s*(?:"
+        + "|".join(re.escape(l) for l in labels)
+        + r")\s*[:：])",
+        body,
+        flags=re.IGNORECASE,
+    )
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        matched = None
+        for label in labels:
+            if re.match(rf"^{re.escape(label)}\s*[:：]", chunk, re.IGNORECASE):
+                matched = label
+                break
+        if not matched:
+            continue
+        pros_m = re.search(r"จุดเด่น\s*[:：]\s*(.+)", chunk)
+        cons_m = re.search(r"จุดที่ต้องคิด\s*[:：]\s*(.+)", chunk)
+        pros = _cell(pros_m.group(1)) if pros_m else ""
+        cons = _cell(cons_m.group(1)) if cons_m else ""
+        if len(pros) > 80:
+            pros = pros[:80].rstrip() + "…"
+        if len(cons) > 80:
+            cons = cons[:80].rstrip() + "…"
+        if pros or cons:
+            # Leave blank cons for _marker_table defaults to fill.
+            out[matched.casefold()] = (pros, cons)
+    return out
+
+
+def _extract_marker_blurbs(reply: str, tiers: list[dict]) -> dict[str, tuple[str, str]]:
+    """Keep non-blank 🎫 pros/cons; blank/`—` left empty for `_tier_blurbs` defaults."""
+    rows = usable_tiers(tiers)
+    out: dict[str, tuple[str, str]] = {}
+    ticket_lines = [
+        ln.strip() for ln in str(reply or "").splitlines() if ln.strip().startswith("🎫")
+    ]
+    for index, line in enumerate(ticket_lines):
+        if index >= len(rows):
+            break
+        rest = line.replace("🎫", "", 1).strip()
+        cells = [c.strip() for c in rest.split("|")]
+        pros = cells[1] if len(cells) > 1 else ""
+        cons = cells[2] if len(cells) > 2 else ""
+        if _is_blank_cell(pros):
+            pros = ""
+        if _is_blank_cell(cons):
+            cons = ""
+        label = _tier_label(rows[index])
+        if not label:
+            continue
+        if pros or cons:
+            out[label.casefold()] = (pros, cons)
+    return out
+
+
+def _markers_need_cell_fill(reply: str) -> bool:
+    """True when 🎫 rows exist but จุดที่ต้องคิด (or จุดเด่น) is blank/—."""
+    for raw in str(reply or "").splitlines():
+        line = raw.strip()
+        if not line.startswith("🎫"):
+            continue
+        rest = line.replace("🎫", "", 1).strip()
+        cells = [c.strip() for c in rest.split("|")]
+        if len(cells) < 3:
+            return True
+        if _is_blank_cell(cells[1]) or _is_blank_cell(cells[2]):
+            return True
+    return False
+
+
+def _marker_table(tiers: list[dict], *, blurbs: dict[str, tuple[str, str]] | None = None) -> str:
+    """Figma markers from catalog tiers; fill จุดเด่น/จุดที่ต้องคิด (never leave —)."""
+    rows = usable_tiers(tiers)
+    if len(rows) < 2:
+        return "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
+    blurbs = blurbs or {}
+
+    lines = [f"⚖️ เทียบ {len(rows)} ตัวเลือกที่น่าสนใจ"]
+    for index, tier in enumerate(rows):
+        price = _format_tier_price(tier)
+        label = _tier_label(tier)
+        key = (label or "").casefold()
+        default_pros, default_cons = _tier_blurbs(index, rows, tier)
+        if key in blurbs:
+            pros, cons = blurbs[key]
+            if _is_blank_cell(pros):
+                pros = default_pros
+            if _is_blank_cell(cons):
+                cons = default_cons
+        else:
+            pros, cons = default_pros, default_cons
+        badge = "|คุ้มสุด" if index == 0 else ""
+        lines.append(f"🎫 {price}|{_cell(pros)}|{_cell(cons)}{badge}")
+    return "\n".join(lines)
+
+
+def needs_price_compare_rewrite(reply: str) -> bool:
+    """True when wire-inject should finalize markers (Hermes owns table UI)."""
+    text = str(reply or "")
+    if _is_zone_essay(text):
+        return True
+    if not has_price_compare_markers(text):
+        return True
+    if _markers_need_cell_fill(text):
+        return True
+    return False
+
+
+def compose_price_compare_reply(
+    model_reply: str,
+    tiers: list[dict],
+    *,
+    title: str = "",
+    venue: str = "",
+) -> str:
+    """Hermes finalize: keep model voice + ensure filled ⚖️/🎫 markers for web.
+
+    - Model markers with real จุดเด่น/จุดที่ต้องคิด → keep
+    - Zone-essay → lift blurbs into cells
+    - Missing markers or blank/— cells → rebuild table from tiers (+ defaults)
+    """
+    reply = str(model_reply or "")
+    if (
+        has_price_compare_markers(reply)
+        and not _is_zone_essay(reply)
+        and not _markers_need_cell_fill(reply)
+    ):
+        return reply
+    rows = usable_tiers(tiers)
+    if len(rows) < 2:
+        return "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
+
+    blurbs = (
+        _extract_zone_blurbs(reply, rows)
+        if _is_zone_essay(reply)
+        else _extract_marker_blurbs(reply, rows)
+    )
+    table = _marker_table(rows, blurbs=blurbs)
+    voice = _keep_model_voice(reply, title=title)
+    return f"{voice}\n{table}"
+
 def format_price_compare_markers(
     tiers: list[dict],
     *,
     title: str = "",
     venue: str = "",
 ) -> str:
-    rows = usable_tiers(tiers)
-    if len(rows) < 2:
-        return "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
-
-    event_title = str(title or "").strip() or "งานนี้"
-    place = str(venue or "").strip()
-    who = event_title
-    best_index = len(rows) // 2
-
-    if place:
-        intro = f"ได้ครับ เทียบราคาบัตรของ {event_title} ที่ {place} ให้ดูหลายโซน"
-    else:
-        intro = f"ได้ครับ เทียบราคาบัตรของ {event_title} ให้ดูหลายโซน"
-
-    lines = [
-        intro,
-        f"⚖️ เทียบ {len(rows)} ตัวเลือกที่น่าสนใจ",
-    ]
-
-    cheapest = rows[0]["price"]
-    for index, tier in enumerate(rows):
-        price = _format_tier_price(tier)
-        label = _tier_label(tier)
-        gap = _format_baht(tier["price"] - cheapest)
-        where = f"ที่ {place}" if place else f"ของ {event_title}"
-        pros = f"โซน {label} {where}"
-        cons = f"แพงกว่าโซนถูกสุด {gap}"
-        badge = ""
-        if index == 0:
-            pros = f"โซน {label} {where} ราคาถูกสุด สำหรับดู {who}"
-            cons = f"ไม่ได้ใกล้ {who} กว่าโซนที่แพงกว่า"
-            badge = "|คุ้มสุด"
-        elif index == best_index:
-            pros = f"โซน {label} {where} สมดุลราคากับมุมมอง"
-            cons = f"แพงกว่า {_tier_label(rows[0])} อยู่ {gap}"
-        elif index == len(rows) - 1:
-            pros = f"โซน {label} {where} ราคาสูงสุดในรอบนี้"
-            cons = f"แพงกว่าโซนถูกสุด {gap} ถ้าอยากอยู่ใกล้ {who}"
-
-        lines.append(f"🎫 {price}|{_cell(pros)}|{_cell(cons)}{badge}")
-
-    pick_tier = rows[best_index]
-    pick = _format_tier_price(pick_tier)
-    pick_where = f" ที่ {place}" if place else ""
-    lines.append(
-        f"🏁 AI Pick: แนะนำ {pick} โซน {_tier_label(pick_tier)} สำหรับไปดู {who}{pick_where}"
-    )
-    lines.append("เหตุผลคือ")
-    lines.append(f"• สมดุลระหว่างราคาและประสบการณ์ของ {who}")
-    lines.append(f"• อิงราคาจริงของ {event_title}")
-    lines.append("• ยังมีทางเลือกถูกหรือแพงกว่าให้ขยับได้")
-    lines.append("")
-    if place:
-        lines.append(f"ถ้าอยากใกล้เวทีกว่านี้ที่ {place} ค่อยขยับโซนบนได้ครับ")
-    else:
-        lines.append(f"ถ้าอยากใกล้เวทีกว่านี้ของ {event_title} ค่อยขยับโซนบนได้ครับ")
-    lines.append(f"💬 เลือก {pick}")
-    lines.append("💬 ดูโซนถูกสุด")
-    lines.append("💬 ซื้อบัตร")
-    return "\n".join(lines)
+    return compose_price_compare_reply("", tiers, title=title, venue=venue)
