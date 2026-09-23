@@ -2,6 +2,21 @@
 
 รูปแบบตาม [Keep a Changelog](https://keepachangelog.com/) · เวอร์ชันตาม [SemVer](https://semver.org/)
 
+## [2.5.3] — 2026-09-23
+
+### Added
+- `usecase_packs`: hardcoded clarify chip packs + layout coerce per AI Ask use-case step
+- Catalog capture for `search_stores` / `list_stores` / `get_store` (nightlife venue cards)
+- Catalog `last_events` retention after attach so follow-up packs (e.g. `compare_store`) still see store titles
+
+### Fixed
+- Inject pack clarify when model chips do not match the use-case pack
+- Coerce `prose` + store catalog → `venue_cards` / `compare_store`
+- Coerce `event_list` → `similar_cards` for similar/home-chip asks
+- Budget-zone turns get `ซื้อบัตร` / `ส่งให้เพื่อน` even when ticket prices are missing
+
+[2.5.3]: https://github.com/weratad/hermes-agent-tcc-mcp-config/releases/tag/v2.5.3
+
 ## [2.5.2] — 2026-09-23
 
 ### Fixed

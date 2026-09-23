@@ -42,7 +42,8 @@ _log = logging.getLogger("hermes.plugin.tcc-mcp-config.catalog-artifacts")
 # mcp__tcc_api__find_events / mcp__tcc_api_stg__get_event / …
 _TOOL_RE = re.compile(
     r"^mcp__tcc_api(?:_[a-z0-9]+)?__"
-    r"(find_events|get_event|recommend_events|search_events)$"
+    r"(find_events|get_event|recommend_events|search_events|"
+    r"search_stores|list_stores|get_store)$"
 )
 
 # Per-profile plugin imports create separate module objects. Keep the event bag
@@ -52,8 +53,14 @@ def _shared_state() -> Dict[str, Any]:
 
     state = sys.modules.setdefault(
         "_tcc_catalog_artifacts_shared",
-        {"bag": {}, "lock": threading.Lock(), "patched": False},
+        {
+            "bag": {},
+            "last_events": {},
+            "lock": threading.Lock(),
+            "patched": False,
+        },
     )
+    state.setdefault("last_events", {})
     return state  # type: ignore[return-value]
 
 
@@ -89,6 +96,7 @@ def take_events(*keys: str) -> List[Dict[str, Any]]:
     with _lock():
         _purge_expired()
         bag = _bag()
+        last = _shared_state()["last_events"]
         found: List[Dict[str, Any]] = []
         matched: List[str] = []
         for raw in keys:
@@ -107,11 +115,48 @@ def take_events(*keys: str) -> List[Dict[str, Any]]:
             bag.pop(key, None)
         # Drop aliases that still hold the same turn (best-effort).
         if found:
+            expires = time.time() + _TTL_SEC
             for raw in keys:
                 key = str(raw or "").strip()
                 if key:
                     bag.pop(key, None)
+                    # Keep a copy for follow-up chip packs after attach consumes the bag.
+                    last[key] = {"events": found[:_MAX_EVENTS], "expires": expires}
         return found
+
+
+def peek_events(*keys: str) -> List[Dict[str, Any]]:
+    """Read catalog events without consuming the bag (for pack/layout helpers)."""
+    with _lock():
+        _purge_expired()
+        bag = _bag()
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            row = bag.get(key)
+            if not row:
+                continue
+            events = row.get("events")
+            if isinstance(events, list) and events:
+                return list(events)
+        # Fall back to last attached turn (stores for compare_store chips, etc.).
+        last = _shared_state().get("last_events") or {}
+        now = time.time()
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            row = last.get(key)
+            if not isinstance(row, dict):
+                continue
+            if float(row.get("expires") or 0) < now:
+                last.pop(key, None)
+                continue
+            events = row.get("events")
+            if isinstance(events, list) and events:
+                return list(events)
+        return []
 
 
 def _day_label(start_at: Any) -> str:
@@ -181,13 +226,68 @@ def _price_label(raw: Dict[str, Any]) -> str:
     return str(int(val)) if val is not None else ""
 
 
+def map_store_item(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict) or raw.get("notFound") is True:
+        return None
+    title = str(
+        raw.get("name")
+        or raw.get("title")
+        or raw.get("name_th")
+        or raw.get("name_en")
+        or ""
+    ).strip()
+    if not title:
+        return None
+    try:
+        sid = int(raw.get("id") or raw.get("store_id") or 0)
+    except (TypeError, ValueError):
+        sid = 0
+    booking = str(raw.get("booking_url") or raw.get("url") or "").strip()
+    if booking:
+        url = booking
+    elif sid > 0:
+        url = f"/store/{sid}"
+    else:
+        url = ""
+    card: Dict[str, Any] = {
+        "title": title,
+        "meta": str(raw.get("district") or raw.get("area") or "").strip(),
+        "url": url,
+        "image": str(
+            raw.get("image")
+            or raw.get("poster_url")
+            or raw.get("cover_url")
+            or ""
+        ).strip(),
+        "kind": "store",
+        "layout": "card",
+    }
+    if sid > 0:
+        card["id"] = str(sid)
+        card["store_id"] = sid
+    if raw.get("has_table_booking") is True or booking:
+        card["has_book"] = True
+    return card
+
+
 def map_catalog_item(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
     if raw.get("notFound") is True:
         return None
+    # Nightlife stores use name + booking_url /store/:id
+    store_name = str(raw.get("name") or raw.get("name_th") or raw.get("name_en") or "").strip()
+    if store_name and (
+        raw.get("booking_url")
+        or raw.get("store_id")
+        or str(raw.get("kind") or "").lower() in {"store", "nightlife"}
+        or (raw.get("id") is not None and not raw.get("product_id") and not raw.get("title"))
+    ):
+        return map_store_item(raw)
     title = str(raw.get("title") or raw.get("title_th") or raw.get("title_en") or "").strip()
     if not title:
+        if store_name:
+            return map_store_item(raw)
         return None
     day = _day_label(raw.get("start_at"))
     shown = str(raw.get("show_time") or "").strip()
@@ -250,10 +350,12 @@ def map_catalog_items(items: Any) -> List[Dict[str, Any]]:
 
 
 def layout_for_tool(tool_name: str) -> str:
-    """get_event → poster link; find/search/recommend → full card."""
+    """get_event → poster link; get_store → store card; find/search/recommend → full card."""
     name = str(tool_name or "")
     if name.endswith("get_event"):
         return "poster"
+    if name.endswith("get_store"):
+        return "card"
     return "card"
 
 

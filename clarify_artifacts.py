@@ -146,6 +146,10 @@ def store_clarify(session_key: str, payload: Any) -> None:
 
 
 def peek_clarify(*keys: str) -> bool:
+    return peek_clarify_payload(*keys) is not None
+
+
+def peek_clarify_payload(*keys: str) -> Optional[Dict[str, Any]]:
     with _lock():
         _purge_expired()
         bag = _bag()
@@ -158,12 +162,13 @@ def peek_clarify(*keys: str) -> bool:
                 continue
             choices = row["clarify"].get("choices")
             if isinstance(choices, list) and choices:
-                return True
-        return False
+                return dict(row["clarify"])
+        return None
 
 
 _CATALOG_TOOL_RE = re.compile(
-    r"(?:^|__)(find_events|get_event|recommend_events|search_events)$"
+    r"(?:^|__)(find_events|get_event|recommend_events|search_events|"
+    r"search_stores|list_stores|get_store)$"
 )
 
 

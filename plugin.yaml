@@ -1,5 +1,5 @@
 name: tcc-mcp-config
-version: "2.5.2"
+version: "2.5.3"
 description: >-
   TCC MCP + per-user profiles + AI Ask artifacts (catalog/clarify/layout) gated
   to user-* profiles only.

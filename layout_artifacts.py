@@ -460,6 +460,7 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
     if not is_ai_ask_user_profile():
         return result
     if getattr(_retry_guard, "active", False):
+        result = _ensure_usecase_artifacts(result)
         return result
     keys = _session_key_aliases()
     has_events = _peek_catalog_events(*keys)
@@ -468,38 +469,187 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
         or has_events
         or _peek_clarify(*keys)
     )
-    if not has_catalog:
-        return result
+    if has_catalog:
+        stored = peek_stored_layout(*keys)
+        prose_with_events = stored == "prose" and has_events
+        missing = not _layout_called_this_turn(*keys)
+        if missing or prose_with_events:
+            retry_message = (
+                RETRY_PROSE_WITH_CATALOG_MESSAGE
+                if prose_with_events
+                else RETRY_USER_MESSAGE
+            )
+            if prose_with_events:
+                _clear_layout_markers(*keys)
 
-    stored = peek_stored_layout(*keys)
-    prose_with_events = stored == "prose" and has_events
-    missing = not _layout_called_this_turn(*keys)
-    if not missing and not prose_with_events:
-        return result
+            history = result.get("messages") if isinstance(result, dict) else None
+            saved_delta = getattr(agent, "stream_delta_callback", None)
+            _retry_guard.active = True
+            try:
+                if saved_delta is not None:
+                    agent.stream_delta_callback = None
+                run_conversation(
+                    user_message=retry_message,
+                    conversation_history=history,
+                    stream_callback=None,
+                )
+            except Exception:
+                _log.exception("layout artifacts: retry failed")
+            finally:
+                if saved_delta is not None:
+                    agent.stream_delta_callback = saved_delta
+                _retry_guard.active = False
+    return _ensure_usecase_artifacts(result)
 
-    retry_message = (
-        RETRY_PROSE_WITH_CATALOG_MESSAGE if prose_with_events else RETRY_USER_MESSAGE
-    )
-    if prose_with_events:
-        _clear_layout_markers(*keys)
 
-    history = result.get("messages") if isinstance(result, dict) else None
-    saved_delta = getattr(agent, "stream_delta_callback", None)
-    _retry_guard.active = True
+def _load_usecase_packs():
     try:
-        if saved_delta is not None:
-            agent.stream_delta_callback = None
-        run_conversation(
-            user_message=retry_message,
-            conversation_history=history,
-            stream_callback=None,
-        )
+        from . import usecase_packs as mod  # type: ignore
+
+        return mod
+    except ImportError:
+        pass
+    path = _Path(__file__).resolve().parent / "usecase_packs.py"
+    spec = _ilu.spec_from_file_location("_tcc_usecase_packs", path)
+    mod = _ilu.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _peek_catalog_event_rows(*keys: str) -> list:
+    import sys
+
+    state = sys.modules.get("_tcc_catalog_artifacts_shared")
+    if not isinstance(state, dict):
+        return []
+    # Prefer catalog.peek_events (includes last_events after take).
+    peek = state.get("peek_events")
+    if callable(peek):
+        try:
+            rows = peek(*keys)
+            if isinstance(rows, list) and rows:
+                return list(rows)
+        except Exception:
+            pass
+    bag = state.get("bag")
+    if not isinstance(bag, dict):
+        return []
+    lock = state.get("lock")
+    last = state.get("last_events")
+    if not isinstance(last, dict):
+        last = {}
+
+    def _read() -> list:
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            row = bag.get(key)
+            if isinstance(row, dict):
+                events = row.get("events")
+                if isinstance(events, list) and events:
+                    return list(events)
+        now = time.time()
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            row = last.get(key)
+            if not isinstance(row, dict):
+                continue
+            if float(row.get("expires") or 0) < now:
+                continue
+            events = row.get("events")
+            if isinstance(events, list) and events:
+                return list(events)
+        return []
+
+    if lock is not None:
+        with lock:
+            return _read()
+    return _read()
+
+
+def _ensure_usecase_artifacts(result: Any) -> Any:
+    """Coerce layout + inject hardcoded clarify packs for known use-case steps."""
+    if not is_ai_ask_user_profile():
+        return result
+    try:
+        packs = _load_usecase_packs()
     except Exception:
-        _log.exception("layout artifacts: retry failed")
-    finally:
-        if saved_delta is not None:
-            agent.stream_delta_callback = saved_delta
-        _retry_guard.active = False
+        _log.debug("layout artifacts: usecase_packs unavailable", exc_info=True)
+        return result
+
+    keys = _session_key_aliases()
+    if not keys:
+        return result
+    messages = result.get("messages") if isinstance(result, dict) else None
+    user_text = packs.last_user_text(messages)
+    events = _peek_catalog_event_rows(*keys)
+    layout = peek_stored_layout(*keys)
+    suggested = packs.suggested_layout(layout, events, user_text)
+    if suggested and suggested != layout:
+        for key in keys:
+            store_layout(key, suggested)
+        layout = suggested
+        _turn_state.layout_called = True
+        _mark_layout_called(*keys)
+        _log.info("layout artifacts: usecase coerce layout=%s", suggested)
+
+    pack = packs.select_pack(layout, events, user_text)
+    if not pack:
+        return result
+
+    # Store clarify via clarify shared bag when pack does not match.
+    import sys
+
+    clarify_state = sys.modules.get("_tcc_clarify_artifacts_shared")
+    if not isinstance(clarify_state, dict):
+        return result
+    bag = clarify_state.get("bag")
+    lock = clarify_state.get("lock")
+    if not isinstance(bag, dict):
+        return result
+
+    def _existing_choices() -> list:
+        for raw in keys:
+            key = str(raw or "").strip()
+            row = bag.get(key) if key else None
+            if not isinstance(row, dict):
+                continue
+            clarify = row.get("clarify")
+            if isinstance(clarify, dict) and isinstance(clarify.get("choices"), list):
+                return list(clarify["choices"])
+        return []
+
+    if lock is not None:
+        with lock:
+            existing = _existing_choices()
+    else:
+        existing = _existing_choices()
+
+    if packs.pack_matches(existing, pack["choices"]):
+        return result
+
+    clarify = {
+        "question": str(pack.get("question") or "สนใจต่อยังไงดี?"),
+        "choices": list(pack.get("choices") or [])[:4],
+    }
+    expires = time.time() + _TTL_SEC
+    if lock is not None:
+        with lock:
+            for key in keys:
+                if key:
+                    bag[key] = {"clarify": clarify, "expires": expires}
+    else:
+        for key in keys:
+            if key:
+                bag[key] = {"clarify": clarify, "expires": expires}
+    _log.info(
+        "layout artifacts: usecase clarify injected choices=%s",
+        clarify["choices"][:4],
+    )
     return result
 
 
