@@ -63,9 +63,12 @@ def test_format_emits_scale_and_tickets():
     assert "฿888" in reply or "888" in reply
     assert has_price_compare_markers(reply)
     assert "คุ้มสุด" in reply
-    assert reply.count("คุ้มสุด") == 1
+    assert any(
+        ln.strip().startswith("🎫") and "คุ้มสุด" in ln for ln in reply.splitlines()
+    )
     assert "ได้ครับ เทียบราคาบัตรของ" not in reply
-    assert "เหตุผลคือ" not in reply
+    assert "🏁" in reply
+    assert "เหตุผลคือ" in reply
 
 
 def test_format_requires_two_usable_tiers():
@@ -137,10 +140,12 @@ def test_compose_keeps_model_markers_with_filled_cells():
         {"zone": "VIP", "price_min": 1200},
     ]
     reply = compose_price_compare_reply(model, tiers, title="Orbit")
-    assert reply == model
     assert "ถูกสุด เข้างานได้" in reply
-
-
+    assert "งบไม่เยอะแนะนำเริ่ม GA ก่อน" in reply
+    assert reply.count("🎫") == 2
+    # Figma recommendation may be appended under an otherwise-clean marker table.
+    assert "🏁" in reply
+    assert "เหตุผลคือ" in reply
 
 
 def test_compose_lifts_colon_zone_prose_into_cells():
@@ -460,3 +465,36 @@ def test_compose_lifts_ga_emdash_zone_essay_into_table():
     assert "ตัวเลือกถูกสุดในงานนี้" not in reply
     # essay lines should not remain as prose fake-table
     assert "จุดเด่น:" not in reply
+
+
+def test_compose_appends_figma_recommendation_block():
+    model = (
+        "เทียบราคา Night Market Live\n"
+        "\n"
+        "GA — 950 บาท\n"
+        "จุดเด่น: ถูกสุด เหมาะกับคนอยากลองงานนี้แบบคุมงบ\n"
+        "จุดที่ต้องคิด: โซนเริ่มต้น อาจไม่พรีเมียม\n"
+        "\n"
+        "VIP — 2,100 บาท\n"
+        "จุดเด่น: สมดุลที่สุดระหว่างราคาและประสบการณ์\n"
+        "จุดที่ต้องคิด: กระโดดราคาจาก GA ค่อนข้างชัด\n"
+        "\n"
+        "VVIP — 3,900 บาท\n"
+        "จุดเด่น: โซนสูงสุดของงาน\n"
+        "จุดที่ต้องคิด: เหมาะกับคนที่อยากได้ฟีลเต็ม\n"
+        "\n"
+        "ถ้าเอาคุ้มสุด ผมเชียร์ VIP\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 950},
+        {"zone": "VIP", "price_min": 2100},
+        {"zone": "VVIP", "price_min": 3900},
+    ]
+    reply = compose_price_compare_reply(
+        model, tiers, title="Night Market Live", allow_structural_fallback=False
+    )
+    assert has_price_compare_markers(reply)
+    assert "🏁" in reply
+    assert "เหตุผลคือ" in reply
+    assert "•" in reply
+    assert "฿2,100" in reply or "VIP" in reply

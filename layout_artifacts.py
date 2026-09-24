@@ -114,7 +114,8 @@ Do not rewrite the reply or event list."""
 
 RETRY_PRICE_COMPARE_MESSAGE = """This turn is a ticket/zone price compare for a named concert.
 Call find_events (q=event name) then get_event if needed, present_layout(compare_value), and emit ⚖️ / 🎫 rows from ticket_tiers.
-Each 🎫 cell must be real advice: ราคา|จุดเด่น|จุดที่ต้องคิด — unique per zone, written for this show (why pay more / what you give up). Do NOT fill จุดเด่น with only the zone name or price (e.g. avoid “โซน GA · ราคาเริ่มต้น”).
+Each 🎫 cell must be real advice: ราคา|จุดเด่น|จุดที่ต้องคิด — unique per zone, written for this show (why pay more / what you give up). Do NOT fill จุดเด่น with only the zone name or price (e.g. avoid “โซน GA · ราคาเริ่มต้น”). Do NOT prefix cells with “ราคา:” / “จุดเด่น:” labels.
+After the table, emit a Figma recommendation block starting with 🏁 — e.g. “🏁 ผมแนะนำ ฿X เป็นตัวเลือกคุ้มสุดครับ” then “เหตุผลคือ” and 2–4 bullet reasons, plus a short closing tip if useful.
 Do NOT ask “เทียบกับอะไร”, which compare type, or request more links — zone/ticket price compare is already implied.
 Do not invent tiers; use tool results."""
 

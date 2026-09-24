@@ -151,7 +151,13 @@ def _tier_label(tier: dict) -> str:
 
 
 def _cell(text: str) -> str:
-    return re.sub(r"\s+", " ", str(text or "").replace("|", " ")).strip()
+    value = str(text or "").replace("|", " ").strip()
+    value = re.sub(
+        r"^(?:ราคา|จุดเด่น|จุดที่ต้องคิด|เหมาะกับ)\s*[:：]\s*",
+        "",
+        value,
+    )
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def has_price_compare_markers(reply: str) -> bool:
@@ -563,6 +569,103 @@ def _marker_table(tiers: list[dict], *, blurbs: dict[str, tuple[str, str]] | Non
     return "\n".join(lines)
 
 
+def _pick_tier_from_reply(reply: str, rows: list[dict]) -> dict | None:
+    """Prefer the zone the model cheered/recommended."""
+    text = str(reply or "")
+    for tier in rows:
+        label = _tier_label(tier)
+        if not label:
+            continue
+        if re.search(
+            rf"(?:เชียร์|แนะนำ|คุ้มสุด(?:คือ)?|recommend(?:s|ed)?)\s*{re.escape(label)}\b",
+            text,
+            re.IGNORECASE,
+        ):
+            return tier
+    # Mid tier matches Figma “คุ้มสุด” balance default when model is silent.
+    if len(rows) >= 3:
+        return rows[len(rows) // 2]
+    return rows[0] if rows else None
+
+
+def _extract_existing_pick(reply: str) -> str:
+    lines = []
+    capture = False
+    for raw in str(reply or "").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("🏁"):
+            capture = True
+            lines.append(stripped)
+            continue
+        if capture:
+            if stripped.startswith(("⚖️", "🎫", "💬")):
+                break
+            if not stripped and lines:
+                # blank ends pick unless next is a bullet
+                continue
+            if stripped.startswith(("•", "-", "–")) or stripped:
+                lines.append(stripped)
+    return "\n".join(lines).strip()
+
+
+def _recommendation_block(
+    reply: str,
+    rows: list[dict],
+    blurbs: dict[str, tuple[str, str]],
+) -> str:
+    """Figma section under the table: ผมแนะนำ ฿… / เหตุผลคือ / bullets."""
+    existing = _extract_existing_pick(reply)
+    if existing:
+        return existing
+
+    pick = _pick_tier_from_reply(reply, rows)
+    if not pick:
+        return ""
+    label = _tier_label(pick) or "โซนนี้"
+    price = _format_tier_price(pick)
+    pros, cons = blurbs.get(label.casefold(), ("", ""))
+    if _is_blank_cell(pros) or _is_canned_cell(pros):
+        pros = ""
+    if _is_blank_cell(cons) or _is_canned_cell(cons):
+        cons = ""
+
+    # Lift free-form cheer sentence if present.
+    cheer = ""
+    cheer_m = re.search(
+        rf"([^\n]*(?:เชียร์|แนะนำ)\s*{re.escape(label)}[^\n]*)",
+        str(reply or ""),
+        re.IGNORECASE,
+    )
+    if cheer_m:
+        cheer = _cell(cheer_m.group(1))
+
+    lines = [
+        f"🏁 ผมแนะนำ {price} เป็นตัวเลือกคุ้มสุดครับ"
+        if re.search(rf"คุ้ม|เชียร์\s*{re.escape(label)}", str(reply or ""), re.I)
+        or not cheer
+        else f"🏁 {cheer}",
+        "เหตุผลคือ",
+    ]
+    bullets: list[str] = []
+    if pros:
+        bullets.append(f"• {pros}")
+    if cons:
+        bullets.append(f"• {cons}")
+    # Extra bullets already in model prose
+    for raw in str(reply or "").splitlines():
+        s = raw.strip()
+        if s.startswith(("•", "-")) and len(s) > 2:
+            tip = _cell(s.lstrip("•-– ").strip())
+            if tip and tip not in pros and tip not in cons:
+                bullets.append(f"• {tip}")
+        if len(bullets) >= 4:
+            break
+    if not bullets:
+        bullets.append(f"• โซน {label} สมดุลราคากับประสบการณ์ของงานนี้")
+    lines.extend(bullets[:4])
+    return "\n".join(lines)
+
+
 def has_price_compare_marker_noise(reply: str) -> bool:
     """True when reply contains any ⚖️ / 🎫 lines (valid or malformed)."""
     text = str(reply or "")
@@ -627,6 +730,16 @@ def compose_price_compare_reply(
         and not _looks_like_zone_price_lines(reply, rows)
         and not _markers_need_cell_fill(reply)
     ):
+        if "🏁" not in reply:
+            blurbs_keep = _merge_cell_blurbs(
+                _extract_marker_blurbs(reply, rows),
+                _extract_dash_zone_blurbs(reply, rows),
+                _extract_insight_blurbs(reply, rows),
+                _extract_zone_blurbs(reply, rows),
+            )
+            pick = _recommendation_block(reply, rows, blurbs_keep)
+            if pick:
+                return f"{reply.rstrip()}\n{pick}"
         return reply
 
     blurbs = _merge_cell_blurbs(
@@ -651,6 +764,9 @@ def compose_price_compare_reply(
         voice = _short_intro(_model_prose(reply), title=title, tier_labels=labels)
     else:
         voice = _keep_model_voice(reply, title=title)
+    pick = _recommendation_block(reply, rows, blurbs)
+    if pick:
+        return f"{voice}\n{table}\n{pick}"
     return f"{voice}\n{table}"
 
 def format_price_compare_markers(
