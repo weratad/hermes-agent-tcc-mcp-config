@@ -741,26 +741,34 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
             and message is not None
             and _price_compare_format.needs_price_compare_rewrite(reply)
         ):
-            composed = _price_compare_format.compose_price_compare_reply(
-                reply,
-                event["ticket_tiers"],
-                title=str(event.get("title") or ""),
-                venue=str(event.get("venue") or ""),
-                # Empty reply → structural only as last resort after stream miss.
-                allow_structural_fallback=True,
-            )
-            message["content"] = composed
-            store_assistant_stream_text(key_list, composed)
             hermes = payload.get("hermes")
             if not isinstance(hermes, dict):
                 hermes = {}
                 payload["hermes"] = hermes
             hermes["layout"] = {"mode": "compare_value"}
-            _log.warning(
-                "catalog artifacts: price compare markers wire-injected n_tiers=%s reply_len=%s",
-                n_tiers,
-                len(reply),
-            )
+            if not str(reply or "").strip():
+                # Empty finish + no stream voice: do NOT invent intro/table.
+                # Layout retry asks the model for real review 🎫 cells.
+                _log.warning(
+                    "catalog artifacts: price compare finish empty — defer to layout retry n_tiers=%s",
+                    n_tiers,
+                )
+            else:
+                composed = _price_compare_format.compose_price_compare_reply(
+                    reply,
+                    event["ticket_tiers"],
+                    title=str(event.get("title") or ""),
+                    venue=str(event.get("venue") or ""),
+                    # Lift model review only — never price-pattern cell templates.
+                    allow_structural_fallback=True,
+                )
+                message["content"] = composed
+                store_assistant_stream_text(key_list, composed)
+                _log.warning(
+                    "catalog artifacts: price compare markers wire-injected n_tiers=%s reply_len=%s",
+                    n_tiers,
+                    len(reply),
+                )
         elif message is not None:
             # P5/P6: strip invented ⚖️/🎫 when no named ≥2-tier event.
             matched = _price_compare_format.matching_event(

@@ -53,22 +53,17 @@ def test_usable_tiers_sorts_and_filters():
 
 
 def test_format_emits_scale_and_tickets():
+    """Empty model must not invent price-pattern cells; intro only until AI reviews."""
     tiers = [
         {"zone": "Early Bird", "price_min": 888, "price_max": 888},
         {"zone": "VIP", "name": "VIP", "price_min": 10000, "price_max": 10000},
     ]
     reply = format_price_compare_markers(tiers, title="Sakon Festival 2026", venue="สกล")
-    assert "⚖️" in reply
-    assert reply.count("🎫") == 2
-    assert "฿888" in reply or "888" in reply
-    assert has_price_compare_markers(reply)
-    assert "คุ้มสุด" in reply
-    assert any(
-        ln.strip().startswith("🎫") and "คุ้มสุด" in ln for ln in reply.splitlines()
-    )
+    assert "เทียบราคาบัตร Sakon Festival 2026" in reply
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "สมดุลราคากับประสบการณ์" not in reply
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in reply
     assert "ได้ครับ เทียบราคาบัตรของ" not in reply
-    assert "🏁" in reply
-    assert "เหตุผลคือ" in reply
 
 
 def test_format_requires_two_usable_tiers():
@@ -78,24 +73,28 @@ def test_format_requires_two_usable_tiers():
 
 
 def test_compose_keeps_full_model_prose_and_adds_markers():
+    """Model review blurbs lift into 🎫 — no price-pattern fill."""
     tiers = [
         {"zone": "GA", "price_min": 550},
         {"zone": "VIP", "price_min": 1500},
     ]
     model = (
         "คุ้มแบบไล่ตามงบ เลือกจากตำแหน่งที่อยากยืนได้เลย\n"
-        "GA เหมาะกับคนงบน้อย\n"
-        "VIP สมดุลกว่าถ้าอยากสบายขึ้น\n"
-        "ราคา | จุดเด่น | จุดที่ต้องคิด\n"
-        "550 | x | y"
+        "GA 550 บาท\n"
+        "จุดเด่น: เหมาะกับคนงบน้อย อยากเก็บบรรยากาศรวม\n"
+        "จุดที่ต้องคิด: มุมและสิทธิ์น้อยกว่าโซนบน\n"
+        "VIP 1,500 บาท\n"
+        "จุดเด่น: สบายขึ้นชัดถ้าอยากยืนดูได้นาน\n"
+        "จุดที่ต้องคิด: จ่ายเพิ่มเพื่อความสบาย ไม่ใช่แค่ชื่อโซน\n"
     )
     reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
     assert "คุ้มแบบไล่ตามงบ" in reply
-    assert "GA เหมาะกับคนงบน้อย" in reply
-    assert "VIP สมดุลกว่าถ้าอยากสบายขึ้น" in reply
-    assert "ราคา | จุดเด่น" not in reply
     assert reply.count("🎫") == 2
     assert has_price_compare_markers(reply)
+    assert "เหมาะกับคนงบน้อย" in reply
+    assert "สบายขึ้นชัด" in reply
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in reply
 
 
 def test_compose_strips_zone_essay_fake_table():
@@ -203,8 +202,8 @@ def test_needs_rewrite_when_cells_are_canned_zone_price():
     assert needs_price_compare_rewrite(canned) is True
 
 
-def test_compose_fills_blank_cons_cells():
-    """Markers with จุดที่ต้องคิด = — must be rewritten with real copy."""
+def test_compose_does_not_invent_blank_cons_cells():
+    """Blank จุดที่ต้องคิด must not be stuffed with structural fallback templates."""
     model = (
         "เทียบราคาบัตร Night Market Live\n"
         "⚖️ เทียบ 3 ตัวเลือกที่น่าสนใจ\n"
@@ -218,23 +217,16 @@ def test_compose_fills_blank_cons_cells():
         {"zone": "VVIP", "price_min": 3900},
     ]
     reply = compose_price_compare_reply(model, tiers, title="Night Market Live")
-    assert has_price_compare_markers(reply)
-    assert reply.count("🎫") == 3
-    # No blank cons
-    for line in reply.splitlines():
-        if not line.strip().startswith("🎫"):
-            continue
-        cells = [c.strip() for c in line.replace("🎫", "", 1).strip().split("|")]
-        assert len(cells) >= 3
-        assert cells[2] not in ("", "—", "-")
-    assert "สิทธิ์/มุมมอง" in reply or "สิทธิ์หรือมุม" in reply
-    assert "แพงกว่า" in reply or "จ่ายเพิ่ม" in reply
-    # Keep model intro above markers
-    assert reply.splitlines()[0] == "เทียบราคาบัตร Night Market Live"
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "สมดุลราคากับประสบการณ์" not in reply
+    assert "สิทธิ์หรือมุมมักน้อยกว่าโซนบน" not in reply
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in reply
+    # Keep model intro above markers when table still present
+    assert "เทียบราคาบัตร Night Market Live" in reply
 
 
 def test_compose_keeps_filled_pros_when_cons_blank():
-    """Keep model จุดเด่น when already filled; only fill blank จุดที่ต้องคิด."""
+    """Keep model จุดเด่น; never invent structural จุดที่ต้องคิด."""
     model = (
         "งบไม่เยอะแนะนำเริ่ม GA ก่อน\n"
         "⚖️ เทียบ 2 ตัวเลือกที่น่าสนใจ\n"
@@ -250,11 +242,8 @@ def test_compose_keeps_filled_pros_when_cons_blank():
     assert "ถูกสุด เข้างานได้" in reply
     assert "สมดุลกว่" in reply
     assert "ราคาเริ่มต้น" not in reply
-    for line in reply.splitlines():
-        if not line.strip().startswith("🎫"):
-            continue
-        cells = [c.strip() for c in line.replace("🎫", "", 1).strip().split("|")]
-        assert cells[2] not in ("", "—", "-")
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in reply
 
 
 def test_needs_rewrite_for_missing_markers_or_blank_cells():
@@ -292,9 +281,11 @@ def test_compose_uses_short_default_without_usable_intro():
         {"zone": "VIP", "price_min": 1500},
     ]
     reply = compose_price_compare_reply("", tiers, title="Orbit Indie Fest", venue="Bravo BKK")
-    assert reply.startswith("เทียบราคาบัตร Orbit Indie Fest\n⚖️")
+    assert "เทียบราคาบัตร Orbit Indie Fest" in reply
     assert "ได้ครับ เทียบราคาบัตรของ" not in reply
-    assert has_price_compare_markers(reply)
+    # Empty model → no structural cell templates (AI must fill on retry / live turn)
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "สมดุลราคากับประสบการณ์" not in reply
 
 
 def test_compose_strips_markers_when_no_usable_tiers():
@@ -344,13 +335,21 @@ def test_compose_with_one_usable_tier_is_honest_no_table():
 def test_has_price_compare_markers_requires_structure():
     assert not has_price_compare_markers("plain prose")
     assert not has_price_compare_markers("⚖️ เทียบ 1 ตัวเลือก\n🎫 ฿100|a|b")
-    good = format_price_compare_markers(
+    # Empty format no longer invents 🎫 — markers require model review lift
+    empty = format_price_compare_markers(
         [
             {"zone": "A", "price_min": 100},
             {"zone": "B", "price_min": 200},
         ],
         title="T",
         venue="V",
+    )
+    assert not has_price_compare_markers(empty)
+    good = (
+        "เกริ่น\n"
+        "⚖️ เทียบ 2 ตัวเลือกที่น่าสนใจ\n"
+        "🎫 ฿100|ถูกและใกล้เวทีพอ|มุมแคบ|คุ้มสุด\n"
+        "🎫 ฿200|มุมกว้างขึ้น|จ่ายเพิ่มเพื่อมุมดี\n"
     )
     assert has_price_compare_markers(good)
 
@@ -406,7 +405,10 @@ def test_compose_skips_structural_fallback_before_retry():
     final = compose_price_compare_reply(
         model, tiers, title="Orbit Indie Fest", allow_structural_fallback=True
     )
-    assert has_price_compare_markers(final)
+    # Final pass still must not invent structural จุดเด่น/จุดที่ต้องคิด
+    assert "เข้างานได้ในงบต่ำสุด" not in final
+    assert "สมดุลราคากับประสบการณ์" not in final
+    assert "สิทธิ์หรือมุมมักน้อยกว่าโซนบน" not in final
 
 
 def test_compose_lifts_ai_insight_lines_into_cells():
@@ -548,3 +550,52 @@ def test_compose_appends_figma_recommendation_block():
     assert "เหตุผลคือ" in reply
     assert "•" in reply
     assert "฿2,100" in reply or "VIP" in reply
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+
+
+def test_compose_never_emits_structural_fallback_blurbs():
+    """Even allow_structural_fallback=True must not paste _tier_blurbs templates."""
+    model = "Orbit Indie Fest มี 3 ราคาเทียบกันได้แบบนี้"
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(
+        model, tiers, title="Orbit Indie Fest", allow_structural_fallback=True
+    )
+    for banned in (
+        "เข้างานได้ในงบต่ำสุด",
+        "สมดุลราคากับประสบการณ์",
+        "สิทธิ์หรือมุมมักน้อยกว่าโซนบน",
+        "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ",
+        "แพงกว่าตัวเลือกถูกสุดประมาณ",
+        "ระดับบนสุดของงานนี้",
+    ):
+        assert banned not in reply, f"structural fallback leaked: {banned!r}"
+
+
+def test_compose_lifts_inline_zone_review_without_จุดเด่น_label():
+    """'GA คุ้มสุดถ้า… / จุดที่ต้องคิด: …' becomes table review cells."""
+    model = (
+        "เทียบ Orbit Indie Fest\n"
+        "GA คุ้มสุดถ้าเน้นประหยัดและอยากเข้าไปดูงานแบบจ่ายน้อยที่สุด\n"
+        "จุดที่ต้องคิด: ฟีลอาจเรียบกว่าโซนสูง\n"
+        "VIP เหมาะถ้าอยากได้ความสบายเพิ่มขึ้นแบบยังไม่แพงเกินไป\n"
+        "จุดที่ต้องคิด: จ่ายเพิ่มจาก GA เพื่อความสบาย\n"
+        "VVIP แพงชัด เหมาะคนที่อยากจัดเต็ม\n"
+        "จุดที่ต้องคิด: เกินงบถ้าไม่ได้โฟกัสสิทธิ์พิเศษ\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert has_price_compare_markers(reply)
+    assert reply.count("🎫") == 3
+    assert "คุ้มสุดถ้าเน้นประหยัด" in reply
+    assert "ฟีลอาจเรียบกว่าโซนสูง" in reply
+    assert "ความสบายเพิ่มขึ้น" in reply
+    assert "เข้างานได้ในงบต่ำสุด" not in reply
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in reply

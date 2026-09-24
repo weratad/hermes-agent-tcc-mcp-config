@@ -330,8 +330,9 @@ def test_price_compare_reply_uses_get_event_tiers_and_compare_value():
         lambda **kwargs: None,
     )
 
-    assert "⚖️" in result["final_response"]
-    assert result["final_response"].count("🎫") == 2
+    assert "งานนี้มีบัตรหลายราคาให้เลือกครับ" in result["final_response"]
+    assert "เข้างานได้ในงบต่ำสุด" not in result["final_response"]
+    assert "สมดุลราคากับประสบการณ์" not in result["final_response"]
     assert result["messages"][-1]["content"] == result["final_response"]
     assert m.peek_stored_layout(key) == "compare_value"
 
@@ -387,11 +388,9 @@ def test_price_compare_reply_prefers_event_named_by_user():
         lambda **kwargs: None,
     )
 
-    assert result["final_response"].startswith(
-        "Sakon Festival มีบัตรหลายราคาให้เลือกครับ\n⚖️"
-    )
-    assert "⚖️" in result["final_response"]
-    assert result["final_response"].count("🎫") == 3
+    assert "Sakon Festival มีบัตรหลายราคาให้เลือกครับ" in result["final_response"]
+    assert "เข้างานได้ในงบต่ำสุด" not in result["final_response"]
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in result["final_response"]
     assert "Sakon Festival" in result["final_response"]
     assert m.peek_stored_layout(key) == "compare_value"
 

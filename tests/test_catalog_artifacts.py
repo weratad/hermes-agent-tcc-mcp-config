@@ -124,8 +124,11 @@ def test_wire_inject_prefers_user_named_event() -> None:
     }
     mod.attach_catalog_to_payload(completion, key)
     content = completion["choices"][0]["message"]["content"]
-    assert content.startswith("มีหลายราคา\n⚖️")
-    assert content.count("🎫") == 2
+    # Thin model prose: keep voice; never invent price-pattern 🎫 cells
+    assert "มีหลายราคา" in content
+    assert "เข้างานได้ในงบต่ำสุด" not in content
+    assert "สมดุลราคากับประสบการณ์" not in content
+    assert "จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ" not in content
 
 
 def test_wire_inject_skips_ambiguous_unrelated_events() -> None:
@@ -263,8 +266,9 @@ def test_wire_inject_creates_message_on_compare_finish_chunk() -> None:
 
     content = chunk["choices"][0]["message"]["content"]
     assert chunk["choices"][0]["message"]["role"] == "assistant"
-    assert "⚖️" in content
-    assert content.count("🎫") == 2
+    # Empty finish: defer to layout retry — no invented intro/table
+    assert content == ""
+    assert "เข้างานได้ในงบต่ำสุด" not in content
     assert chunk["hermes"]["layout"] == {"mode": "compare_value"}
 
 

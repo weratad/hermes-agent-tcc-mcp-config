@@ -114,8 +114,10 @@ Do not rewrite the reply or event list."""
 
 RETRY_PRICE_COMPARE_MESSAGE = """This turn is a ticket/zone price compare for a named concert.
 Call find_events (q=event name) then get_event if needed, present_layout(compare_value), and emit ⚖️ / 🎫 rows from ticket_tiers.
-Each 🎫 cell must be real advice: ราคา|จุดเด่น|จุดที่ต้องคิด — unique per zone, written for this show (why pay more / what you give up). Do NOT fill จุดเด่น with only the zone name or price (e.g. avoid “โซน GA · ราคาเริ่มต้น”). Do NOT prefix cells with “ราคา:” / “จุดเด่น:” labels.
-After the table, emit a Figma recommendation block starting with 🏁 — e.g. “🏁 ผมแนะนำ ฿X เป็นตัวเลือกคุ้มสุดครับ” then “เหตุผลคือ” and 2–4 bullet reasons, plus a short closing tip if useful.
+Each 🎫 cell must be short Thai *review* copy for THIS show: ราคา|จุดเด่น|จุดที่ต้องคิด — unique per zone (why it feels worth it / what you give up in vibe, view, perks, crowd — not a price formula).
+Do NOT fill จุดเด่น with only the zone name or price. Do NOT prefix cells with “ราคา:” / “จุดเด่น:” labels.
+FORBIDDEN cell patterns (never use): “เข้างานได้ในงบต่ำสุด”, “สมดุลราคากับประสบการณ์”, “สิทธิ์หรือมุมมักน้อยกว่าโซนบน”, “จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ ฿…”, “แพงกว่าตัวเลือกถูกสุดประมาณ ฿…”, “ระดับบนสุดของงานนี้”.
+After the table, emit a Figma recommendation block starting with 🏁 — e.g. “🏁 ผมแนะนำ ฿X เป็นตัวเลือกคุ้มสุดครับ” then “เหตุผลคือ” and 2–4 review-style bullet reasons (not those forbidden patterns).
 Do NOT ask “เทียบกับอะไร”, which compare type, or request more links — zone/ticket price compare is already implied.
 Do not invent tiers; use tool results."""
 
@@ -559,7 +561,7 @@ def maybe_retry_layout(agent: Any, result: Any, run_conversation) -> Any:
                 if saved_delta is not None:
                     agent.stream_delta_callback = saved_delta
                 _retry_guard.active = False
-            # After retry: allow structural fallback so the table is never blank.
+            # After retry: finalize with model review lift only (no price-pattern cells).
             result = _ensure_price_compare_artifacts(
                 result, allow_structural_fallback=True
             )

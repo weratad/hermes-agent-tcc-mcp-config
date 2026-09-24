@@ -12,6 +12,9 @@ COMPARE_ASK_RE = re.compile(
     r"โซนไหน.{0,48}(?:งบ|งบประมาณ|คุ้ม)|"
     r"ซื้อโซนไหน|"
     r"ควรซื้อโซน|"
+    r"จุดเด่น.{0,40}จุดที่ต้องคิด|"
+    r"จุดที่ต้องคิดของแต่ละโซน|"
+    r"เทียบ\s*(?:GA|VIP|VVIP|บัตร)|"
     r"compare\s+(?:ticket\s+)?prices?|"
     r"ticket\s+prices?",
     re.IGNORECASE,
@@ -295,22 +298,23 @@ def _is_blank_cell(text: str) -> bool:
 _CANNED_CELL_RE = re.compile(
     r"โซน\s+\S+\s*·\s*(?:ราคาเริ่มต้น|สมดุลราคากับประสบการณ์|ระดับบนสุด)"
     r"|ตัวเลือกถูกสุดในงานนี้|ตัวเลือกกลาง|ตัวเลือกบนสุดในงานนี้"
-    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+เข้างานได้ในงบต่ำสุด"
-    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+ระดับบนสุดของงานนี้"
-    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+สมดุลราคากับประสบการณ์$"
+    r"|เข้างานได้ในงบต่ำสุด"
+    r"|ระดับบนสุดของงานนี้"
+    r"|สมดุลราคากับประสบการณ์"
     r"|สิทธิ์/มุมมองมักน้อยกว่าโซนบน|สิทธิ์หรือมุมมักน้อยกว่าโซนบน"
     r"|จ่ายเพิ่มจากโซนถูกสุดประมาณ|จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ"
-    r"|แพงกว่าโซนถูกสุดประมาณ|แพงกว่าตัวเลือกถูกสุดประมาณ",
+    r"|แพงกว่าโซนถูกสุดประมาณ|แพงกว่าตัวเลือกถูกสุดประมาณ"
+    r"|ราคาสูงสุดในตารางนี้",
 )
 
 
 def _is_canned_cell(text: str) -> bool:
-    """True for structural zone+price templates — not model-written advice."""
+    """True for structural zone+price templates — not model-written review advice."""
     return bool(_CANNED_CELL_RE.search(str(text or "")))
 
 
 def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
-    """Last-resort fill only — include zone label so rows are not identical templates."""
+    """Deprecated price-pattern templates — kept for tests of canned detection only."""
     n = len(rows)
     cheapest = float(rows[0]["price_min"])
     price = float(tier["price_min"])
@@ -413,9 +417,11 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
     if not labels:
         return out
 
+    # Longer labels first so "VIP ( 1 QR… )" wins over a bare "VIP" if both appear.
+    labels = sorted(labels, key=len, reverse=True)
     label_alt = "|".join(re.escape(l) for l in labels)
     parts = re.split(
-        rf"(?=(?:^|\n)\s*(?:{label_alt})\b)",
+        rf"(?=(?:^|\n)\s*(?:{label_alt})(?:\s|[—–\-:：]|$))",
         body,
         flags=re.IGNORECASE,
     )
@@ -426,7 +432,7 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
         matched = None
         for label in labels:
             if re.match(
-                rf"^{re.escape(label)}\b(?:\s*[—–\-:：]|\s|$)",
+                rf"^{re.escape(label)}(?:\s*[—–\-:：]|\s|$)",
                 chunk,
                 re.IGNORECASE,
             ):
@@ -438,6 +444,34 @@ def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, s
         cons_m = re.search(r"จุดที่ต้องคิด\s*[:：]\s*(.+)", chunk)
         pros = _cell(pros_m.group(1)) if pros_m else ""
         cons = _cell(cons_m.group(1)) if cons_m else ""
+        # Inline header prose: "GA คุ้มสุดถ้าเน้นประหยัด…"
+        if not pros:
+            header = chunk.split("\n", 1)[0]
+            rest = re.sub(
+                rf"^{re.escape(matched)}(?:\s*[—–\-:：]\s*|\s+)?(?:฿?\d[\d,]*(?:\s*บาท)?)?\s*",
+                "",
+                header,
+                flags=re.IGNORECASE,
+            ).strip()
+            if (
+                rest
+                and not rest.startswith("จุด")
+                and not _is_canned_cell(rest)
+                and len(rest) >= 6
+            ):
+                pros = _cell(rest)
+        # Next-line review: zone name alone, then pros line, then จุดที่ต้องคิด
+        if not pros:
+            body_lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+            for ln in body_lines[1:]:
+                if re.match(r"จุด(?:เด่น|ที่ต้องคิด)\s*[:：]", ln):
+                    break
+                if _is_canned_cell(ln) or len(ln) < 6:
+                    continue
+                if re.fullmatch(r"฿?\d[\d,]*(?:\s*บาท)?", ln):
+                    continue
+                pros = _cell(ln)
+                break
         if len(pros) > 80:
             pros = pros[:80].rstrip() + "…"
         if len(cons) > 80:
@@ -680,7 +714,7 @@ def _markers_need_cell_fill(reply: str) -> bool:
 
 
 def _marker_table(tiers: list[dict], *, blurbs: dict[str, tuple[str, str]] | None = None) -> str:
-    """Figma markers from catalog tiers; prefer model blurbs (never leave —)."""
+    """Figma markers from catalog tiers; model review blurbs only (no price-pattern fill)."""
     rows = usable_tiers(tiers)
     if len(rows) < 2:
         return "ตอนนี้ยังไม่มีราคาแยกตามโซนพอให้เทียบครับ"
@@ -691,15 +725,13 @@ def _marker_table(tiers: list[dict], *, blurbs: dict[str, tuple[str, str]] | Non
         price = _format_tier_price(tier)
         label = _tier_label(tier)
         key = (label or "").casefold()
-        default_pros, default_cons = _tier_blurbs(index, rows, tier)
+        pros, cons = "—", "—"
         if key in blurbs:
-            pros, cons = blurbs[key]
-            if _is_blank_cell(pros) or _is_canned_cell(pros):
-                pros = default_pros
-            if _is_blank_cell(cons) or _is_canned_cell(cons):
-                cons = default_cons
-        else:
-            pros, cons = default_pros, default_cons
+            raw_pros, raw_cons = blurbs[key]
+            if raw_pros and not _is_blank_cell(raw_pros) and not _is_canned_cell(raw_pros):
+                pros = raw_pros
+            if raw_cons and not _is_blank_cell(raw_cons) and not _is_canned_cell(raw_cons):
+                cons = raw_cons
         badge = "|คุ้มสุด" if index == 0 else ""
         lines.append(f"🎫 {price}|{_cell(pros)}|{_cell(cons)}{badge}")
     return "\n".join(lines)
@@ -796,9 +828,7 @@ def _recommendation_block(
                 bullets.append(f"• {tip}")
         if len(bullets) >= 4:
             break
-    if not bullets:
-        bullets.append(f"• โซน {label} สมดุลราคากับประสบการณ์ของงานนี้")
-    # Avoid echoing the same canned cell text under the table.
+    # Avoid echoing canned / price-pattern cell text under the table.
     deduped: list[str] = []
     for b in bullets:
         tip = b.lstrip("• ").strip()
@@ -807,7 +837,8 @@ def _recommendation_block(
         if tip not in [x.lstrip("• ").strip() for x in deduped]:
             deduped.append(b)
     if not deduped:
-        deduped = [f"• โซน {label} สมดุลราคากับประสบการณ์ของงานนี้"]
+        # No real review reasons — recommend price only (never invent pattern bullets).
+        return lines[0]
     lines.extend(deduped[:4])
     return "\n".join(lines)
 
@@ -858,13 +889,15 @@ def compose_price_compare_reply(
     venue: str = "",
     allow_structural_fallback: bool = True,
 ) -> str:
-    """Hermes finalize: keep model voice + ensure filled ⚖️/🎫 markers for web.
+    """Hermes finalize: keep model review voice + ⚖️/🎫 markers for web.
 
     - Model markers with real จุดเด่น/จุดที่ต้องคิด → keep (only when ≥2 tiers)
     - Zone-essay / dash prose (GA 550 บาท — …) → lift into cells
-    - Missing markers: lift model blurbs into table; structural fallback only when
-      ``allow_structural_fallback`` (after a model retry) — never invent zone+price copy first
-    - <2 usable tiers → honest no-table (never keep invented ⚖️/🎫)
+    - Missing markers: lift model review blurbs into table
+    - Never invent price-pattern cells (จ่ายเพิ่มจากตัวเลือกถูกสุด / สมดุลราคา…)
+    - ``allow_structural_fallback`` only gates emitting a table when model review
+      cells are thin (pre-retry: wait; post-retry: still no price-pattern fill)
+    - <2 usable tiers → honest no-table
     """
     reply = str(model_reply or "")
     rows = usable_tiers(tiers)
@@ -898,15 +931,21 @@ def compose_price_compare_reply(
         _extract_insight_blurbs(reply, rows),
         _extract_zone_blurbs(reply, rows),
     )
-    model_pros = sum(
+    model_tiers = sum(
         1
-        for _, (pros, _) in blurbs.items()
-        if pros and not _is_blank_cell(pros) and not _is_canned_cell(pros)
+        for _, (pros, cons) in blurbs.items()
+        if (
+            (pros and not _is_blank_cell(pros) and not _is_canned_cell(pros))
+            or (cons and not _is_blank_cell(cons) and not _is_canned_cell(cons))
+        )
     )
-    if model_pros < 2 and not allow_structural_fallback:
-        # Let layout retry ask the model for real 🎫 cells — do not stuff templates yet.
-        cleaned = _model_prose(reply)
-        return cleaned or _short_intro("", title=title)
+    if model_tiers < 2:
+        # Need review copy on ≥2 zones — never paste price-pattern templates.
+        cleaned = _model_prose(reply) or _short_intro("", title=title)
+        if not allow_structural_fallback:
+            return cleaned
+        # Post-retry still thin: keep prose only (table would be — or patterns).
+        return cleaned
 
     table = _marker_table(rows, blurbs=blurbs)
     labels = [_tier_label(t) for t in rows if _tier_label(t)]
