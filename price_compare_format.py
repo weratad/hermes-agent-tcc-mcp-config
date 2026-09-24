@@ -206,7 +206,13 @@ def _is_zone_essay(text: str) -> bool:
     body = str(text or "")
     pros = len(re.findall(r"จุดเด่น\s*[:：]", body))
     cons = len(re.findall(r"จุดที่ต้องคิด\s*[:：]", body))
-    return pros >= 2 or (pros >= 1 and cons >= 1)
+    if pros >= 2 or (pros >= 1 and cons >= 1):
+        return True
+    # Pipe-header fake table: "ราคา | จุดเด่น | จุดที่ต้องคิด" repeated per zone.
+    pipe_headers = len(
+        re.findall(r"ราคา\s*\|\s*จุดเด่น\s*\|\s*จุดที่ต้องคิด", body, flags=re.IGNORECASE)
+    )
+    return pipe_headers >= 2
 
 
 def _short_intro(prose: str, *, title: str = "", tier_labels: list[str] | None = None) -> str:
@@ -319,6 +325,72 @@ def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
         "ตัวเลือกกลาง สมดุลราคาและประสบการณ์",
         f"จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ {_format_baht(delta)}",
     )
+
+
+def _extract_pipe_header_blurbs(
+    text: str, tiers: list[dict]
+) -> dict[str, tuple[str, str]]:
+    """Lift pipe-header fake tables into cells.
+
+    Example::
+        GA 550 บาท
+        ราคา | จุดเด่น | จุดที่ต้องคิด
+        550 | เข้าถึงง่ายที่สุด | ฟีลพื้นฐานกว่าโซนบน
+    """
+    body = str(text or "")
+    out: dict[str, tuple[str, str]] = {}
+    rows = usable_tiers(tiers)
+    labels = [_tier_label(t) for t in rows if _tier_label(t)]
+    if not labels:
+        return out
+    label_alt = "|".join(re.escape(l) for l in labels)
+    parts = re.split(
+        rf"(?=(?:^|\n)\s*(?:{label_alt})\b)",
+        body,
+        flags=re.IGNORECASE,
+    )
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        matched = None
+        for label in labels:
+            if re.match(
+                rf"^{re.escape(label)}\b(?:\s|[—–\-:：]|$)",
+                chunk,
+                re.IGNORECASE,
+            ):
+                matched = label
+                break
+        if not matched:
+            continue
+        # Prefer an explicit data row after the pipe header.
+        data_m = re.search(
+            r"ราคา\s*\|\s*จุดเด่น\s*\|\s*จุดที่ต้องคิด\s*\n"
+            r"\s*([^\n|]+)\|([^\n|]+)\|([^\n]+)",
+            chunk,
+            flags=re.IGNORECASE,
+        )
+        if data_m:
+            pros = _cell(data_m.group(2))
+            cons = _cell(data_m.group(3))
+        else:
+            # Fallback: first pipe row that looks like price|pros|cons
+            row_m = re.search(
+                r"(?:^|\n)\s*(\d[\d,.]*)\s*(?:บาท)?\s*\|\s*([^|\n]+)\|\s*([^|\n]+)",
+                chunk,
+            )
+            if not row_m:
+                continue
+            pros = _cell(row_m.group(2))
+            cons = _cell(row_m.group(3))
+        if len(pros) > 80:
+            pros = pros[:80].rstrip() + "…"
+        if len(cons) > 80:
+            cons = cons[:80].rstrip() + "…"
+        if pros or cons:
+            out[matched.casefold()] = (pros, cons)
+    return out
 
 
 def _extract_zone_blurbs(text: str, tiers: list[dict]) -> dict[str, tuple[str, str]]:
@@ -733,6 +805,7 @@ def compose_price_compare_reply(
         if "🏁" not in reply:
             blurbs_keep = _merge_cell_blurbs(
                 _extract_marker_blurbs(reply, rows),
+                _extract_pipe_header_blurbs(reply, rows),
                 _extract_dash_zone_blurbs(reply, rows),
                 _extract_insight_blurbs(reply, rows),
                 _extract_zone_blurbs(reply, rows),
@@ -744,6 +817,7 @@ def compose_price_compare_reply(
 
     blurbs = _merge_cell_blurbs(
         _extract_marker_blurbs(reply, rows),
+        _extract_pipe_header_blurbs(reply, rows),
         _extract_dash_zone_blurbs(reply, rows),
         _extract_insight_blurbs(reply, rows),
         _extract_zone_blurbs(reply, rows),

@@ -431,6 +431,38 @@ def test_compose_lifts_ai_insight_lines_into_cells():
     assert "AI Insight:" not in reply
 
 
+def test_compose_lifts_pipe_header_fake_table_into_cells():
+    """Model pasted 'ราคา | จุดเด่น | จุดที่ต้องคิด' blocks — lift into 🎫 cells."""
+    model = (
+        "Orbit Indie Fest คุ้มแบบไล่ตามงบได้ชัดเจนเลย\n"
+        "\n"
+        "GA 550 บาท\n"
+        "ราคา | จุดเด่น | จุดที่ต้องคิด\n"
+        "550 | เข้าถึงง่ายที่สุด | ถ้าอยากได้ประสบการณ์รวมงานแบบคุ้มงบ\n"
+        "เหมาะกับคนที่อยากดูบรรยากาศและเก็บงานนี้ในงบต่ำสุด\n"
+        "\n"
+        "VIP 1,200 บาท\n"
+        "ราคา | จุดเด่น | จุดที่ต้องคิด\n"
+        "1,200 | สมดุลระหว่างราคาและความพรีเมียม | จ่ายเพิ่มจาก GA ค่อนข้างพอเห็นผล\n"
+        "\n"
+        "VVIP 2,200 บาท\n"
+        "ราคา | จุดเด่น | จุดที่ต้องคิด\n"
+        "2,200 | ตัวเลือกสูงสุดของงาน | ควรเลือกเมื่ออยากได้โซนพิเศษ\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert has_price_compare_markers(reply)
+    assert reply.count("🎫") == 3
+    assert "เข้าถึงง่ายที่สุด" in reply
+    assert "สมดุลระหว่างราคาและความพรีเมียม" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+    assert "ราคา | จุดเด่น | จุดที่ต้องคิด" not in reply
+
+
 def test_compose_lifts_ga_emdash_zone_essay_into_table():
     """Screenshot format: GA — 950 บาท / จุดเด่น: … must become ⚖️/🎫 table."""
     model = (
