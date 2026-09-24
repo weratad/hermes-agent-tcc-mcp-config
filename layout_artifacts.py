@@ -733,6 +733,21 @@ def _ensure_price_compare_artifacts(
             if isinstance(row, dict) and row.get("role") == "assistant":
                 row["content"] = ensured
                 break
+    # Catalog finish-frame prefers this over composing from an empty message
+    # (which stuffed the same canned ตัวเลือกถูกสุด… cells every turn).
+    try:
+        import sys
+
+        cat_state = sys.modules.get("_tcc_catalog_artifacts_shared")
+        store_fn = (
+            cat_state.get("store_assistant_stream_text")
+            if isinstance(cat_state, dict)
+            else None
+        )
+        if callable(store_fn):
+            store_fn(keys, ensured)
+    except Exception:
+        _log.debug("layout artifacts: could not stash ensured reply", exc_info=True)
     return result
 
 

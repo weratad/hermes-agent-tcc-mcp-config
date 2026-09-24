@@ -295,6 +295,9 @@ def _is_blank_cell(text: str) -> bool:
 _CANNED_CELL_RE = re.compile(
     r"โซน\s+\S+\s*·\s*(?:ราคาเริ่มต้น|สมดุลราคากับประสบการณ์|ระดับบนสุด)"
     r"|ตัวเลือกถูกสุดในงานนี้|ตัวเลือกกลาง|ตัวเลือกบนสุดในงานนี้"
+    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+เข้างานได้ในงบต่ำสุด"
+    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+ระดับบนสุดของงานนี้"
+    r"|(?:[A-Za-z0-9ก-๙]{1,24})\s+สมดุลราคากับประสบการณ์$"
     r"|สิทธิ์/มุมมองมักน้อยกว่าโซนบน|สิทธิ์หรือมุมมักน้อยกว่าโซนบน"
     r"|จ่ายเพิ่มจากโซนถูกสุดประมาณ|จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ"
     r"|แพงกว่าโซนถูกสุดประมาณ|แพงกว่าตัวเลือกถูกสุดประมาณ",
@@ -307,22 +310,23 @@ def _is_canned_cell(text: str) -> bool:
 
 
 def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
-    """Last-resort fill only — never 'โซน X · ราคา…' tautology (model should fill)."""
+    """Last-resort fill only — include zone label so rows are not identical templates."""
     n = len(rows)
     cheapest = float(rows[0]["price_min"])
     price = float(tier["price_min"])
     delta = max(0, int(round(price - cheapest)))
+    label = _tier_label(tier) or "โซนนี้"
     if index == 0:
-        return ("ตัวเลือกถูกสุดในงานนี้", "สิทธิ์หรือมุมมักน้อยกว่าโซนบน")
+        return (f"{label} เข้างานได้ในงบต่ำสุด", "สิทธิ์หรือมุมมักน้อยกว่าโซนบน")
     if index == n - 1:
         cons = (
             f"แพงกว่าตัวเลือกถูกสุดประมาณ {_format_baht(delta)}"
             if delta
             else "ราคาสูงสุดในตารางนี้"
         )
-        return ("ตัวเลือกบนสุดในงานนี้", cons)
+        return (f"{label} ระดับบนสุดของงานนี้", cons)
     return (
-        "ตัวเลือกกลาง สมดุลราคาและประสบการณ์",
+        f"{label} สมดุลราคากับประสบการณ์",
         f"จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ {_format_baht(delta)}",
     )
 
@@ -555,6 +559,66 @@ def _extract_insight_blurbs(
     return out
 
 
+def _extract_bullet_blurbs(
+    text: str, tiers: list[dict]
+) -> dict[str, tuple[str, str]]:
+    """Lift freeform •/− bullets that mention a zone (or ordered tips) into cells."""
+    rows = usable_tiers(tiers)
+    if not rows:
+        return {}
+    labels = [_tier_label(t) for t in rows if _tier_label(t)]
+    bullets: list[str] = []
+    for raw in str(text or "").splitlines():
+        s = raw.strip()
+        if not s.startswith(("•", "-", "–", "—")) or len(s) < 3:
+            continue
+        tip = _cell(s.lstrip("•-–— ").strip())
+        if tip and not _is_canned_cell(tip) and "เหตุผลคือ" not in tip:
+            bullets.append(tip[:100].rstrip("…") + ("…" if len(tip) > 100 else ""))
+    if len(bullets) < 2:
+        return {}
+
+    out: dict[str, tuple[str, str]] = {}
+    # Prefer bullets that name a zone.
+    for label in labels:
+        for tip in bullets:
+            if re.search(rf"(?<!\w){re.escape(label)}(?!\w)", tip, flags=re.IGNORECASE):
+                if label.casefold() not in out:
+                    out[label.casefold()] = (tip, "")
+                break
+    # Fill remaining tiers in order from unused bullets.
+    unused = [b for b in bullets if all(b != pros for pros, _ in out.values())]
+    for index, tier in enumerate(rows):
+        label = _tier_label(tier)
+        if not label or label.casefold() in out:
+            continue
+        if not unused:
+            break
+        out[label.casefold()] = (unused.pop(0), "")
+
+    # Attach price-gap cons when missing.
+    cheapest = float(rows[0]["price_min"])
+    for index, tier in enumerate(rows):
+        label = _tier_label(tier)
+        if not label:
+            continue
+        key = label.casefold()
+        if key not in out:
+            continue
+        pros, cons = out[key]
+        if cons:
+            continue
+        delta = max(0, int(round(float(tier["price_min"]) - cheapest)))
+        if index == 0:
+            cons = "สิทธิ์หรือมุมมักน้อยกว่าโซนบน"
+        elif delta:
+            cons = f"จ่ายเพิ่มจากตัวเลือกถูกสุดประมาณ {_format_baht(delta)}"
+        else:
+            cons = "พิจารณางบก่อนตัดสินใจ"
+        out[key] = (pros, cons)
+    return out
+
+
 def _merge_cell_blurbs(
     *sources: dict[str, tuple[str, str]],
 ) -> dict[str, tuple[str, str]]:
@@ -734,7 +798,17 @@ def _recommendation_block(
             break
     if not bullets:
         bullets.append(f"• โซน {label} สมดุลราคากับประสบการณ์ของงานนี้")
-    lines.extend(bullets[:4])
+    # Avoid echoing the same canned cell text under the table.
+    deduped: list[str] = []
+    for b in bullets:
+        tip = b.lstrip("• ").strip()
+        if _is_canned_cell(tip):
+            continue
+        if tip not in [x.lstrip("• ").strip() for x in deduped]:
+            deduped.append(b)
+    if not deduped:
+        deduped = [f"• โซน {label} สมดุลราคากับประสบการณ์ของงานนี้"]
+    lines.extend(deduped[:4])
     return "\n".join(lines)
 
 
@@ -807,6 +881,7 @@ def compose_price_compare_reply(
                 _extract_marker_blurbs(reply, rows),
                 _extract_pipe_header_blurbs(reply, rows),
                 _extract_dash_zone_blurbs(reply, rows),
+                _extract_bullet_blurbs(reply, rows),
                 _extract_insight_blurbs(reply, rows),
                 _extract_zone_blurbs(reply, rows),
             )
@@ -819,6 +894,7 @@ def compose_price_compare_reply(
         _extract_marker_blurbs(reply, rows),
         _extract_pipe_header_blurbs(reply, rows),
         _extract_dash_zone_blurbs(reply, rows),
+        _extract_bullet_blurbs(reply, rows),
         _extract_insight_blurbs(reply, rows),
         _extract_zone_blurbs(reply, rows),
     )

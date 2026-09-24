@@ -431,6 +431,24 @@ def test_compose_lifts_ai_insight_lines_into_cells():
     assert "AI Insight:" not in reply
 
 
+def test_compose_lifts_freeform_bullets_into_cells():
+    model = (
+        "Orbit Indie Fest เทียบแล้วครับ\n"
+        "• ได้เข้าร่วมงานนี้ในราคาต่ำสุด\n"
+        "• VIP สมดุลงบกับฟีลงานชัดกว่า GA\n"
+        "• VVIP แพงขึ้นชัด เหมาะคนที่อยากจัดเต็ม\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert "ได้เข้าร่วมงานนี้ในราคาต่ำสุด" in reply
+    assert "สมดุลงบกับฟีลงานชัดกว่า GA" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+
+
 def test_compose_lifts_pipe_header_fake_table_into_cells():
     """Model pasted 'ราคา | จุดเด่น | จุดที่ต้องคิด' blocks — lift into 🎫 cells."""
     model = (

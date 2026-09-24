@@ -77,6 +77,7 @@ def _shared_state() -> Dict[str, Any]:
             "bag": {},
             "last_events": {},
             "last_user_text": {},
+            "assistant_stream": {},
             "lock": threading.Lock(),
             "patched": False,
         },
@@ -84,6 +85,7 @@ def _shared_state() -> Dict[str, Any]:
     state.setdefault("bag", {})
     state.setdefault("last_events", {})
     state.setdefault("last_user_text", {})
+    state.setdefault("assistant_stream", {})
     state.setdefault("lock", threading.Lock())
     return state  # type: ignore[return-value]
 
@@ -101,6 +103,71 @@ _MAX_EVENTS = 8
 _PATCHED_ATTR = "_tcc_catalog_artifacts_patched"
 _DETAIL_TIMEOUT_SEC = 5.0
 _ENRICH_TOOL_SUFFIXES = ("find_events", "recommend_events", "search_events")
+_MAX_ASSISTANT_STREAM = 8000
+
+
+def append_assistant_stream_text(keys: Any, chunk: str) -> None:
+    """Accumulate streamed assistant deltas so finish-frame compose keeps model voice."""
+    piece = str(chunk or "")
+    if not piece:
+        return
+    raw_keys = [keys] if isinstance(keys, str) else list(keys or [])
+    expires = time.time() + _TTL_SEC
+    with _lock():
+        rows = _shared_state()["assistant_stream"]
+        for raw in raw_keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            prev = rows.get(key) or {}
+            text = str(prev.get("text") or "") + piece
+            if len(text) > _MAX_ASSISTANT_STREAM:
+                text = text[-_MAX_ASSISTANT_STREAM:]
+            rows[key] = {"text": text, "expires": expires}
+
+
+def store_assistant_stream_text(keys: Any, text: str) -> None:
+    """Replace stored assistant text (e.g. layout-ensured reply)."""
+    value = str(text or "")
+    if not value.strip():
+        return
+    raw_keys = [keys] if isinstance(keys, str) else list(keys or [])
+    expires = time.time() + _TTL_SEC
+    with _lock():
+        rows = _shared_state()["assistant_stream"]
+        for raw in raw_keys:
+            key = str(raw or "").strip()
+            if key:
+                rows[key] = {"text": value[:_MAX_ASSISTANT_STREAM], "expires": expires}
+
+
+def peek_assistant_stream_text(*keys: str) -> str:
+    with _lock():
+        rows = _shared_state()["assistant_stream"]
+        now = time.time()
+        for raw in keys:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            row = rows.get(key)
+            if not isinstance(row, dict):
+                continue
+            if float(row.get("expires") or 0) < now:
+                rows.pop(key, None)
+                continue
+            text = str(row.get("text") or "").strip()
+            if text:
+                return text
+        return ""
+
+
+def clear_assistant_stream_text(*keys: str) -> None:
+    with _lock():
+        rows = _shared_state()["assistant_stream"]
+        for raw in keys:
+            key = str(raw or "").strip()
+            if key:
+                rows.pop(key, None)
 
 
 def _purge_expired(now: Optional[float] = None) -> None:
@@ -193,10 +260,14 @@ def store_last_user_text(keys: Any, text: str) -> None:
     expires = time.time() + _TTL_SEC
     with _lock():
         rows = _shared_state()["last_user_text"]
+        stream = _shared_state()["assistant_stream"]
         for raw in raw_keys:
             key = str(raw or "").strip()
             if key:
                 rows[key] = {"text": value, "expires": expires}
+                # New user turn — drop prior assistant stream so finish compose
+                # cannot lift stale voice from the previous reply.
+                stream.pop(key, None)
 
 
 def peek_last_user_text(*keys: str) -> str:
@@ -658,26 +729,37 @@ def attach_catalog_to_payload(payload: Dict[str, Any], *keys: str) -> Dict[str, 
             message = {"role": "assistant", "content": ""}
             choice["message"] = message
         reply = str(message.get("content") or "") if message is not None else ""
+        # Finish frames often have empty message while model voice lived in deltas.
+        # Recover streamed / layout-ensured text so compose does not stuff canned cells.
+        if not reply.strip():
+            streamed = peek_assistant_stream_text(*key_list, *_session_key_aliases())
+            if streamed:
+                reply = streamed
         if (
             n_tiers >= 2
             and event is not None
             and message is not None
             and _price_compare_format.needs_price_compare_rewrite(reply)
         ):
-            message["content"] = _price_compare_format.compose_price_compare_reply(
+            composed = _price_compare_format.compose_price_compare_reply(
                 reply,
                 event["ticket_tiers"],
                 title=str(event.get("title") or ""),
                 venue=str(event.get("venue") or ""),
+                # Empty reply → structural only as last resort after stream miss.
+                allow_structural_fallback=True,
             )
+            message["content"] = composed
+            store_assistant_stream_text(key_list, composed)
             hermes = payload.get("hermes")
             if not isinstance(hermes, dict):
                 hermes = {}
                 payload["hermes"] = hermes
             hermes["layout"] = {"mode": "compare_value"}
             _log.warning(
-                "catalog artifacts: price compare markers wire-injected n_tiers=%s",
+                "catalog artifacts: price compare markers wire-injected n_tiers=%s reply_len=%s",
                 n_tiers,
+                len(reply),
             )
         elif message is not None:
             # P5/P6: strip invented ⚖️/🎫 when no named ≥2-tier event.
@@ -865,11 +947,21 @@ def _install_response_patch() -> bool:
                 and data.get("object") == "chat.completion.chunk"
             ):
                 choices = data.get("choices") or []
-                if choices and choices[0].get("finish_reason"):
+                choice0 = choices[0] if choices and isinstance(choices[0], dict) else None
+                keys = (*_payload_session_keys(data), *_session_key_aliases())
+                if choice0 is not None and not choice0.get("finish_reason"):
+                    delta = choice0.get("delta")
+                    piece = ""
+                    if isinstance(delta, dict):
+                        piece = str(delta.get("content") or "")
+                    elif isinstance(choice0.get("message"), dict):
+                        piece = str(choice0["message"].get("content") or "")
+                    if piece:
+                        append_assistant_stream_text(keys, piece)
+                if choice0 is not None and choice0.get("finish_reason"):
                     attach_catalog_to_payload(
                         data,
-                        *_payload_session_keys(data),
-                        *_session_key_aliases(),
+                        *keys,
                     )
             if event is None:
                 return original_frame(data)
@@ -897,6 +989,8 @@ def register(ctx) -> None:
     state["peek_events"] = peek_events
     state["store_last_user_text"] = store_last_user_text
     state["peek_last_user_text"] = peek_last_user_text
+    state["store_assistant_stream_text"] = store_assistant_stream_text
+    state["peek_assistant_stream_text"] = peek_assistant_stream_text
     ctx.register_hook("post_tool_call", on_post_tool_call)
     try:
         _install_response_patch()

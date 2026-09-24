@@ -268,6 +268,61 @@ def test_wire_inject_creates_message_on_compare_finish_chunk() -> None:
     assert chunk["hermes"]["layout"] == {"mode": "compare_value"}
 
 
+def test_compose_lifts_freeform_bullets_into_cells():
+    from price_compare_format import compose_price_compare_reply
+
+    model = (
+        "Orbit Indie Fest เทียบแล้วครับ\n"
+        "• ได้เข้าร่วมงานนี้ในราคาต่ำสุด\n"
+        "• VIP สมดุลงบกับฟีลงานชัดกว่า GA\n"
+        "• VVIP แพงขึ้นชัด เหมาะคนที่อยากจัดเต็ม\n"
+    )
+    tiers = [
+        {"zone": "GA", "price_min": 550},
+        {"zone": "VIP", "price_min": 1200},
+        {"zone": "VVIP", "price_min": 2200},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="Orbit Indie Fest")
+    assert "ได้เข้าร่วมงานนี้ในราคาต่ำสุด" in reply
+    assert "สมดุลงบกับฟีลงานชัดกว่า GA" in reply
+    assert "ตัวเลือกถูกสุดในงานนี้" not in reply
+
+
+def test_wire_inject_uses_streamed_model_voice_not_empty_canned() -> None:
+    mod = _load_plugin()
+    key = "wire-stream-voice"
+    mod.store_last_user_text([key], "เทียบราคาบัตร Orbit Indie Fest")
+    mod.store_events(
+        key,
+        [
+            {
+                "title": "Orbit Indie Fest",
+                "ticket_tiers": [
+                    {"zone": "GA", "price_min": 550},
+                    {"zone": "VIP", "price_min": 1200},
+                    {"zone": "VVIP", "price_min": 2200},
+                ],
+            }
+        ],
+    )
+    mod.append_assistant_stream_text(
+        [key],
+        "Orbit คุ้มแบบไล่ตามงบ\n"
+        "GA 550 บาท — ถูกสุด เหมาะถ้าอยากลองงานนี้แบบคุมงบ\n"
+        "VIP 1,200 บาท — จ่ายเพิ่มเพื่อความสบายขึ้น\n"
+        "VVIP 2,200 บาท — แพงสุด เหมาะถ้าเน้นพรีเมียม\n",
+    )
+    chunk = {
+        "object": "chat.completion.chunk",
+        "choices": [{"delta": {}, "finish_reason": "stop"}],
+    }
+    mod.attach_catalog_to_payload(chunk, key)
+    content = chunk["choices"][0]["message"]["content"]
+    assert "ถูกสุด เหมาะถ้าอยากลองงานนี้แบบคุมงบ" in content
+    assert "ตัวเลือกถูกสุดในงานนี้" not in content
+    assert content.count("🎫") == 3
+
+
 def test_payload_session_keys_reads_finish_chunk_hermes_aliases() -> None:
     mod = _load_plugin()
 
