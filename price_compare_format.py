@@ -335,6 +335,36 @@ def _tier_blurbs(index: int, rows: list[dict], tier: dict) -> tuple[str, str]:
     )
 
 
+def _extract_labeled_price_rows(text: str) -> list[tuple[str, str, str]]:
+    """Lift `ราคา 199 บาท | จุดเด่น: … | จุดที่ต้องคิด: …` lines into cells."""
+    rows: list[tuple[str, str, str]] = []
+    pattern = re.compile(
+        r"^ราคา\s*(\d[\d,]*)\s*บาท\s*\|\s*จุดเด่น\s*[:：]\s*(.*?)\s*\|\s*จุดที่ต้องคิด\s*[:：]\s*(.+)$",
+        re.IGNORECASE,
+    )
+    for raw in str(text or "").splitlines():
+        match = pattern.match(raw.strip())
+        if not match:
+            continue
+        price = match.group(1).replace(",", "")
+        pros = _cell(match.group(2))
+        cons = _cell(match.group(3))
+        if price and (pros or cons):
+            rows.append((price, pros, cons))
+    return rows
+
+
+def _labeled_price_table(rows: list[tuple[str, str, str]]) -> str:
+    if len(rows) < 2:
+        return ""
+    cheapest = min(int(price) for price, _, _ in rows)
+    lines = [f"⚖️ เทียบ {len(rows)} ตัวเลือกที่น่าสนใจ"]
+    for price, pros, cons in rows:
+        badge = "|คุ้มสุด" if int(price) == cheapest else ""
+        lines.append(f"🎫 ฿{price}|{_cell(pros)}|{_cell(cons)}{badge}")
+    return "\n".join(lines)
+
+
 def _extract_pipe_header_blurbs(
     text: str, tiers: list[dict]
 ) -> dict[str, tuple[str, str]]:
@@ -922,6 +952,12 @@ def compose_price_compare_reply(
             if pick:
                 return f"{reply.rstrip()}\n{pick}"
         return reply
+
+    labeled = _extract_labeled_price_rows(reply)
+    if len(labeled) >= 2:
+        table = _labeled_price_table(labeled)
+        voice = _short_intro(_model_prose(reply), title=title)
+        return f"{voice}\n{table}" if voice else table
 
     blurbs = _merge_cell_blurbs(
         _extract_marker_blurbs(reply, rows),

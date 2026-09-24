@@ -575,6 +575,26 @@ def test_compose_never_emits_structural_fallback_blurbs():
         assert banned not in reply, f"structural fallback leaked: {banned!r}"
 
 
+def test_compose_lifts_labeled_baht_pipe_lines():
+    """`ราคา N บาท | จุดเด่น: | จุดที่ต้องคิด:` becomes 🎫 rows, not prose."""
+    model = (
+        "STARRYFLORALSEEMUSICFEST 2026\n"
+        "ราคา 199 บาท | จุดเด่น: ราคาพิเศษที่สุดในงาน | จุดที่ต้องคิด: ยังไม่ระบุโซน\n"
+        "ราคา 249 บาท | จุดเด่น: Early Bird โซนนั่ง Floral Seat | จุดที่ต้องคิด: Free Seating\n"
+        "🎫 เปรียบเทียบบัตรของงานนี้\n"
+    )
+    tiers = [
+        {"zone": "Floral Seat", "price_min": 249},
+        {"zone": "Starlight", "price_min": 389},
+    ]
+    reply = compose_price_compare_reply(model, tiers, title="STARRYFLORALSEEMUSICFEST 2026")
+    assert has_price_compare_markers(reply)
+    assert "฿199" in reply
+    assert "ราคาพิเศษที่สุดในงาน" in reply
+    assert "Free Seating" in reply
+    assert "เปรียบเทียบบัตรของงานนี้" not in reply
+
+
 def test_compose_lifts_inline_zone_review_without_จุดเด่น_label():
     """'GA คุ้มสุดถ้า… / จุดที่ต้องคิด: …' becomes table review cells."""
     model = (
